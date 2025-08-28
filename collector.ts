@@ -177,7 +177,7 @@ async function runCollection() {
                     precipitation: data.precip,
                     humidity: data.humid,
                     wind_speed: data.wind_s,
-                    wind_direction: data.wind_d,
+                    // wind_direction: data.wind_d, // Removed - column doesn't exist
                     uv_index: data.uv,
                     weather_code: data.code,
                     weather_type: getWeatherType(data.code || 0),
