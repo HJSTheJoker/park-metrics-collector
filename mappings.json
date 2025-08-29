@@ -1,0 +1,129 @@
+{
+  "parks": [
+    {
+      "name": "Magic Kingdom",
+      "queue_times_id": 6,
+      "themeparks_id": "75ea578a-adc8-4116-a54d-dccb60765ef9"
+    },
+    {
+      "name": "EPCOT",
+      "queue_times_id": 5,
+      "themeparks_id": "1c84a229-8862-4648-9c71-378ddd2c7693"
+    },
+    {
+      "name": "Hollywood Studios",
+      "queue_times_id": 7,
+      "themeparks_id": "288747d1-8b4f-4a64-867e-ea7c9b27bad8"
+    },
+    {
+      "name": "Animal Kingdom",
+      "queue_times_id": 8,
+      "themeparks_id": "1b94cf50-c79b-4fa2-a4ac-e23765eae0f2"
+    },
+    {
+      "name": "Disneyland Park",
+      "queue_times_id": 16,
+      "themeparks_id": "ca888437-ebb4-4d50-aed2-d227f7096968"
+    },
+    {
+      "name": "Disney California Adventure",
+      "queue_times_id": 17,
+      "themeparks_id": "832fcd51-ea19-4e77-85c7-75d5843b127c"
+    },
+    {
+      "name": "Universal Studios Florida",
+      "queue_times_id": 64,
+      "themeparks_id": "3196809e-766e-4707-b173-58c960c43e41"
+    },
+    {
+      "name": "Universal Islands of Adventure",
+      "queue_times_id": 65,
+      "themeparks_id": "afd5e3ca-b078-4e66-bd25-4b7290cf2cea"
+    },
+    {
+      "name": "Universal Studios Hollywood",
+      "queue_times_id": 66,
+      "themeparks_id": "13eb22cb-5ec9-43eb-b8bd-71c6e13752e9"
+    },
+    {
+      "name": "Disneyland Paris",
+      "queue_times_id": 4,
+      "themeparks_id": "bfc89fd6-314d-44b4-b89e-df1a89cf991e"
+    },
+    {
+      "name": "Walt Disney Studios Park",
+      "queue_times_id": 3,
+      "themeparks_id": "8a9fec1f-d147-4146-a8ff-d1e38c744ab3"
+    },
+    {
+      "name": "Tokyo Disneyland",
+      "queue_times_id": 149,
+      "themeparks_id": "24cf3990-be18-494f-b159-3772cf308906"
+    },
+    {
+      "name": "Tokyo DisneySea",
+      "queue_times_id": 148,
+      "themeparks_id": "b69dbb3a-7889-40d7-8e18-e01b33bcacfb"
+    },
+    {
+      "name": "Shanghai Disneyland",
+      "queue_times_id": 276,
+      "themeparks_id": "b030eefd-e8ab-44bb-ab19-a3b003fad3b1"
+    },
+    {
+      "name": "Hong Kong Disneyland",
+      "queue_times_id": 48,
+      "themeparks_id": "dd7686b5-4c97-491e-b366-33b0c37bd02b"
+    },
+    {
+      "name": "Europa-Park",
+      "queue_times_id": 21,
+      "themeparks_id": "6c52284a-ef32-4099-878e-64afaef11023"
+    },
+    {
+      "name": "Alton Towers",
+      "queue_times_id": 26,
+      "themeparks_id": "d33b0b69-f51f-405e-ba97-24cb9453036e"
+    },
+    {
+      "name": "Thorpe Park",
+      "queue_times_id": 23,
+      "themeparks_id": "06919074-b8ce-4e71-bd19-8e41c4a01fd4"
+    },
+    {
+      "name": "Chessington World of Adventures",
+      "queue_times_id": 25,
+      "themeparks_id": "59b407d0-d799-4653-8f12-c9c2085a562b"
+    },
+    {
+      "name": "LEGOLAND Windsor",
+      "queue_times_id": 27,
+      "themeparks_id": "74907706-9463-4364-a513-fcd0a47963e5"
+    },
+    {
+      "name": "Efteling",
+      "queue_times_id": 169,
+      "themeparks_id": "9f7ca707-7bb5-40d4-8c30-34a97be61891"
+    },
+    {
+      "name": "PortAventura Park",
+      "queue_times_id": 35,
+      "themeparks_id": "40209c13-5a44-4d08-aa6f-549b59216cf7"
+    },
+    {
+      "name": "Six Flags Magic Mountain",
+      "queue_times_id": 61,
+      "themeparks_id": "7cf3c4a9-614e-4411-aed5-75a6c01e8637"
+    },
+    {
+      "name": "Cedar Point",
+      "queue_times_id": 50,
+      "themeparks_id": "a3f552bd-3e24-4610-9fe5-7de7f0fca17f"
+    },
+    {
+      "name": "Kings Island",
+      "queue_times_id": 108,
+      "themeparks_id": "de5315f4-8ddd-4ee8-a408-27e1c42a67da"
+    }
+  ]
+}
