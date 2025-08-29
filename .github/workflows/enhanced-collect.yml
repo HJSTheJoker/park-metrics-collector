@@ -22,7 +22,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          npm ci || npm install
+          npm ci
       
       - name: Run enhanced collection
         env:
