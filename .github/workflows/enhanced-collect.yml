@@ -2,41 +2,39 @@ name: Enhanced Data Collection
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Every 15 minutes
-  workflow_dispatch:      # Allow manual trigger
+    - cron: '*/5 * * * *'  # Every 5 minutes
+  workflow_dispatch:        # Allow manual trigger
+
+permissions:
+  contents: read            # Minimum required token scope
+
+concurrency:
+  group: queue-times-collector
+  cancel-in-progress: true  # Prevent overlapping runs
 
 jobs:
   collect-enhanced:
     runs-on: ubuntu-latest
-    timeout-minutes: 30    # Increased from 10 to 30 minutes
-    
+    timeout-minutes: 15     # Keep runs short so they don't stack
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-      
+
       - name: Install dependencies
-        run: |
-          npm ci
-      
-      - name: Run enhanced collection
+        run: npm ci
+
+      - name: Run enhanced collection (fallback to standard)
         env:
           DB_CONNECTION: ${{ secrets.DB_CONNECTION }}
           DB_AUTH: ${{ secrets.DB_AUTH }}
         run: |
-          echo "Starting enhanced collection with dual API support..."
-          npx tsx enhanced-collector.ts
-      
-      - name: Run fallback collection (if enhanced fails)
-        if: failure()
-        env:
-          DB_CONNECTION: ${{ secrets.DB_CONNECTION }}
-          DB_AUTH: ${{ secrets.DB_AUTH }}
-        run: |
-          echo "Enhanced collection failed, running standard collector..."
-          npx tsx collector.ts
+          set -eo pipefail
+          echo "Starting enhanced collection..."
+          npx tsx enhanced-collector.ts \
+            || (echo "Enhanced failed, running fallback..." && npx tsx collector.ts)
