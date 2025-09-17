@@ -1,0 +1,47 @@
+name: Parkfolio Collector
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # every 5 minutes
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parkfolio-cron
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Health check (quick)
+        env:
+          BASE_URL: https://parkfolio.vercel.app
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          echo "Health check…"
+          curl -fsSL "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET&quick=true" >/dev/null
+          echo "OK"
+
+      - name: Run full collection
+        env:
+          BASE_URL: https://parkfolio.vercel.app
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          echo "Triggering Parkfolio cron collector…"
+          # retry up to 3 times in case of transient network issues
+          for i in 1 2 3; do
+            if RESP="$(curl -fsSL "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET")"; then
+              echo "$RESP"
+              exit 0
+            fi
+            echo "Retry $i/3…"
+            sleep 5
+          done
+          echo "Failed to trigger Parkfolio cron after retries" >&2
+          exit 1
