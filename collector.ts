@@ -3,24 +3,28 @@
 /**
  * Generic park metrics collection utility
  * Aggregates publicly available queue time data
+ * NOW WRITES TO TURSODB for historical data storage
  */
 
 import * as dotenv from 'dotenv'
-import { createClient } from '@supabase/supabase-js'
+import { supabase, writeWaitTimesToTurso, writeWeatherToTurso } from './lib/database-clients'
 
 // Load environment
 dotenv.config()
 
-// Generic environment variables
+// Generic environment variables (for backward compatibility)
 const DATABASE_URL = process.env.DB_CONNECTION
 const DATABASE_KEY = process.env.DB_AUTH
 
-if (!DATABASE_URL || !DATABASE_KEY) {
+// New TursoDB environment variables
+const TURSO_URL = process.env.TURSO_DATABASE_URL || process.env.TURSO_DB_URL
+const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN || process.env.TURSO_AUTH_TOKEN
+
+if (!DATABASE_URL || !DATABASE_KEY || !TURSO_URL || !TURSO_TOKEN) {
   console.error('Missing required configuration')
+  console.error('Need: DB_CONNECTION, DB_AUTH, TURSO_DATABASE_URL, TURSO_AUTH_TOKEN')
   process.exit(1)
 }
-
-const db = createClient(DATABASE_URL, DATABASE_KEY)
 
 // Weather data collection
 async function collectWeather(lat: number, lon: number) {
@@ -28,9 +32,9 @@ async function collectWeather(lat: number, lon: number) {
     const response = await fetch(
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,uv_index&timezone=auto&forecast_days=1`
     )
-    
+
     if (!response.ok) return null
-    
+
     const data = await response.json()
     return {
       temp: data.current?.temperature_2m,
@@ -51,17 +55,17 @@ async function collectWeather(lat: number, lon: number) {
 async function collectQueues(parkId: number) {
   try {
     const response = await fetch(`https://queue-times.com/parks/${parkId}/queue_times.json`)
-    
+
     if (!response.ok) return null
-    
+
     const data = await response.json()
-    
+
     const allItems = []
-    
+
     if (data.rides && Array.isArray(data.rides)) {
       allItems.push(...data.rides)
     }
-    
+
     if (data.lands && Array.isArray(data.lands)) {
       data.lands.forEach((land: any) => {
         if (land.rides && Array.isArray(land.rides)) {
@@ -69,11 +73,11 @@ async function collectQueues(parkId: number) {
         }
       })
     }
-    
+
     const unique = Array.from(
       new Map(allItems.map(item => [item.id, item])).values()
     )
-    
+
     return unique
   } catch (error) {
     return null
@@ -115,38 +119,40 @@ async function runCollection() {
   const startTime = Date.now()
   console.log('Starting data collection...')
   console.log(`Time: ${new Date().toISOString()}`)
-  
+  console.log('🗃️  Writing to TursoDB for historical data storage')
+
   const stats = {
     locations: 0,
     processed: 0,
     weather: 0,
     queues: 0,
-    stored: 0,
+    stored_wait_times: 0,
+    stored_weather: 0,
     errors: 0
   }
 
   try {
-    // Get locations from database
-    const { data: locations, error: locError } = await db
+    // Get locations from Supabase (reference data)
+    const { data: locations, error: locError } = await supabase
       .from('locations')
       .select('id, name, external_id, lat, lon')
       .order('name')
 
     if (locError || !locations) {
-      console.error('Database error')
+      console.error('Supabase error fetching locations')
       process.exit(1)
     }
 
     stats.locations = locations.length
-    console.log(`Found ${locations.length} locations`)
+    console.log(`Found ${locations.length} locations from Supabase`)
 
-    // Get metadata mapping
-    const { data: metadata, error: metaError } = await db
+    // Get metadata mapping from Supabase
+    const { data: metadata, error: metaError } = await supabase
       .from('metadata')
       .select('id, external_id')
 
     if (metaError) {
-      console.error('Metadata error')
+      console.error('Supabase error fetching metadata')
       process.exit(1)
     }
 
@@ -155,108 +161,88 @@ async function runCollection() {
     )
 
     const timestamp = new Date().toISOString()
+    const weatherRecords = []
+    const waitTimeRecords = []
 
     // Process all locations
     for (const location of locations) {
       process.stdout.write(`Processing ${location.name}...`)
 
       try {
-        const tasks = []
-
         // Collect weather if coordinates available
         if (location.lat && location.lon) {
-          tasks.push(
-            collectWeather(location.lat, location.lon).then(async (data) => {
-              if (data) {
-                const { error } = await db
-                  .from('weather_data')
-                  .insert({
-                    location_id: location.id,
-                    temperature: data.temp,
-                    feels_like: data.feels,
-                    precipitation: data.precip,
-                    humidity: data.humid,
-                    wind_speed: data.wind_s,
-                    // wind_direction: data.wind_d, // Removed - column doesn't exist
-                    uv_index: data.uv,
-                    weather_code: data.code,
-                    weather_type: getWeatherType(data.code || 0),
-                    recorded_at: timestamp,
-                    source: 'open_meteo'
-                  })
-                
-                if (!error) {
-                  stats.weather++
-                  return 'W'
-                }
-              }
-              return null
+          const weatherData = await collectWeather(location.lat, location.lon)
+          if (weatherData) {
+            weatherRecords.push({
+              location_id: location.id,
+              temperature: weatherData.temp,
+              feels_like: weatherData.feels,
+              precipitation: weatherData.precip,
+              humidity: weatherData.humid,
+              wind_speed: weatherData.wind_s,
+              uv_index: weatherData.uv,
+              weather_code: weatherData.code,
+              weather_type: getWeatherType(weatherData.code || 0),
+              recorded_at: timestamp,
+              source: 'open_meteo'
             })
-          )
+            stats.weather++
+          }
         }
 
         // Collect queue data if external ID available
         if (location.external_id) {
-          tasks.push(
-            collectQueues(location.external_id).then(async (items) => {
-              if (items && items.length > 0) {
-                stats.queues += items.length
+          const queueItems = await collectQueues(location.external_id)
+          if (queueItems && queueItems.length > 0) {
+            stats.queues += queueItems.length
 
-                const records = items
-                  .map(item => {
-                    const metaId = metaMap.get(item.id)
-                    if (!metaId) return null
+            const records = queueItems
+              .map(item => {
+                const metaId = metaMap.get(item.id)
+                if (!metaId) return null
 
-                    return {
-                      item_id: metaId,
-                      wait_time: item.wait_time || 0,
-                      is_open: item.is_open !== false,
-                      source: 'queue_times',
-                      confidence: 1.0,
-                      recorded_at: timestamp
-                    }
-                  })
-                  .filter(Boolean)
-
-                if (records.length > 0) {
-                  const { error } = await db
-                    .from('wait_times')
-                    .insert(records)
-                  
-                  if (!error) {
-                    stats.stored += records.length
-                    return 'Q'
-                  }
+                return {
+                  id: crypto.randomUUID(),
+                  item_id: metaId,
+                  park_id: location.id,
+                  wait_time: item.wait_time || 0,
+                  is_open: item.is_open !== false,
+                  source: 'queue_times',
+                  confidence: 1.0,
+                  recorded_at: timestamp
                 }
-              }
-              return null
-            })
-          )
+              })
+              .filter(Boolean)
+
+            waitTimeRecords.push(...records)
+          }
         }
 
-        const results = await Promise.all(tasks)
-        const success = results.filter(Boolean).join('')
-        
         const elapsed = Date.now() - startTime
-        console.log(` [${success || '-'}] ${elapsed}ms`)
-        
+        console.log(` [WQ] ${elapsed}ms`)
         stats.processed++
+
       } catch (error) {
         console.log(' [ERROR]')
         stats.errors++
       }
     }
 
-    // Cleanup old data
-    const { error: cleanupErr } = await db.rpc('cleanup_old_data')
-    if (!cleanupErr) {
-      console.log('Cleaned old records')
+    // Write data to TursoDB in batches
+    console.log('\n📝 Writing data to TursoDB...')
+
+    if (weatherRecords.length > 0) {
+      console.log(`Writing ${weatherRecords.length} weather records...`)
+      const weatherResult = await writeWeatherToTurso(weatherRecords)
+      stats.stored_weather = weatherResult.inserted
+      console.log(`✅ Weather: ${weatherResult.inserted}/${weatherResult.total} records written`)
     }
 
-    // Aggregate stats
-    const { error: aggregateErr } = await db.rpc('aggregate_hourly_stats')
-    if (!aggregateErr) {
-      console.log('Aggregated hourly statistics')
+    if (waitTimeRecords.length > 0) {
+      console.log(`Writing ${waitTimeRecords.length} wait time records...`)
+      const waitResult = await writeWaitTimesToTurso(waitTimeRecords)
+      stats.stored_wait_times = waitResult.inserted
+      console.log(`✅ Wait times: ${waitResult.inserted}/${waitResult.total} records written`)
     }
 
     // Summary
@@ -264,13 +250,14 @@ async function runCollection() {
     console.log('---')
     console.log(`Complete in ${(totalTime / 1000).toFixed(1)}s`)
     console.log(`Processed: ${stats.processed}/${stats.locations}`)
-    console.log(`Weather: ${stats.weather}`)
-    console.log(`Queues: ${stats.queues}`)
-    console.log(`Stored: ${stats.stored}`)
+    console.log(`Weather collected: ${stats.weather}`)
+    console.log(`Weather stored: ${stats.stored_weather}`)
+    console.log(`Queues collected: ${stats.queues}`)
+    console.log(`Wait times stored: ${stats.stored_wait_times}`)
     if (stats.errors > 0) {
       console.log(`Errors: ${stats.errors}`)
     }
-    
+
     process.exit(0)
 
   } catch (error) {
