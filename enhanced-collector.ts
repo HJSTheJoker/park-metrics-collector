@@ -2,11 +2,11 @@
 
 /**
  * Enhanced park metrics collection with dual API support
- * Combines Queue-Times and ThemeParks.wiki data for improved accuracy
+ * NOW WRITES TO TURSODB for historical data storage
  */
 
 import * as dotenv from 'dotenv'
-import { createClient } from '@supabase/supabase-js'
+import { supabase, writeWaitTimesToTurso, writeWeatherToTurso } from './lib/database-clients'
 import { themeParksWiki } from './lib/themeparks-wiki'
 import { aggregator } from './lib/aggregator'
 import * as fs from 'fs'
@@ -14,16 +14,19 @@ import * as fs from 'fs'
 // Load environment
 dotenv.config()
 
-// Generic environment variables
+// Generic environment variables (for backward compatibility)
 const DATABASE_URL = process.env.DB_CONNECTION
 const DATABASE_KEY = process.env.DB_AUTH
 
-if (!DATABASE_URL || !DATABASE_KEY) {
+// New TursoDB environment variables
+const TURSO_URL = process.env.TURSO_DATABASE_URL || process.env.TURSO_DB_URL
+const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN || process.env.TURSO_AUTH_TOKEN
+
+if (!DATABASE_URL || !DATABASE_KEY || !TURSO_URL || !TURSO_TOKEN) {
   console.error('Missing required configuration')
+  console.error('Need: DB_CONNECTION, DB_AUTH, TURSO_DATABASE_URL, TURSO_AUTH_TOKEN')
   process.exit(1)
 }
-
-const db = createClient(DATABASE_URL, DATABASE_KEY)
 
 // Load park mappings
 const mappings = JSON.parse(fs.readFileSync('./mappings.json', 'utf-8'))
@@ -37,9 +40,9 @@ async function collectWeather(lat: number, lon: number) {
     const response = await fetch(
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,uv_index&timezone=auto&forecast_days=1`
     )
-    
+
     if (!response.ok) return null
-    
+
     const data = await response.json()
     return {
       temp: data.current?.temperature_2m,
@@ -60,17 +63,17 @@ async function collectWeather(lat: number, lon: number) {
 async function collectQueueTimes(parkId: number) {
   try {
     const response = await fetch(`https://queue-times.com/parks/${parkId}/queue_times.json`)
-    
+
     if (!response.ok) return null
-    
+
     const data = await response.json()
-    
+
     const allItems = []
-    
+
     if (data.rides && Array.isArray(data.rides)) {
       allItems.push(...data.rides)
     }
-    
+
     if (data.lands && Array.isArray(data.lands)) {
       data.lands.forEach((land: any) => {
         if (land.rides && Array.isArray(land.rides)) {
@@ -78,11 +81,11 @@ async function collectQueueTimes(parkId: number) {
         }
       })
     }
-    
+
     const unique = Array.from(
       new Map(allItems.map(item => [item.id, item])).values()
     )
-    
+
     return unique
   } catch (error) {
     console.error(`Queue-Times error for park ${parkId}:`, error)
@@ -94,14 +97,14 @@ async function collectQueueTimes(parkId: number) {
 async function collectThemeParks(parkId: string) {
   try {
     const attractions = await themeParksWiki.getParkWaitTimes(parkId)
-    
+
     if (!attractions) return null
-    
+
     // Convert to simple format
     const converted = attractions
       .map(a => themeParksWiki.convertToSimpleFormat(a))
       .filter(Boolean)
-    
+
     return converted
   } catch (error) {
     console.error(`ThemeParks.wiki error for park ${parkId}:`, error)
@@ -144,7 +147,8 @@ async function runEnhancedCollection() {
   const startTime = Date.now()
   console.log('Starting enhanced data collection with dual API support...')
   console.log(`Time: ${new Date().toISOString()}`)
-  
+  console.log('🗃️  Writing to TursoDB for historical data storage')
+
   const stats = {
     locations: 0,
     processed: 0,
@@ -152,7 +156,8 @@ async function runEnhancedCollection() {
     queueTimesData: 0,
     themeparksData: 0,
     aggregated: 0,
-    stored: 0,
+    stored_wait_times: 0,
+    stored_weather: 0,
     highConfidence: 0,
     mediumConfidence: 0,
     lowConfidence: 0,
@@ -160,27 +165,27 @@ async function runEnhancedCollection() {
   }
 
   try {
-    // Get locations from database
-    const { data: locations, error: locError } = await db
+    // Get locations from Supabase (reference data)
+    const { data: locations, error: locError } = await supabase
       .from('locations')
       .select('id, name, external_id, lat, lon')
       .order('name')
 
     if (locError || !locations) {
-      console.error('Database error:', locError)
+      console.error('Supabase error fetching locations')
       process.exit(1)
     }
 
     stats.locations = locations.length
-    console.log(`Found ${locations.length} locations`)
+    console.log(`Found ${locations.length} locations from Supabase`)
 
-    // Get metadata mapping for rides
-    const { data: metadata, error: metaError } = await db
+    // Get metadata mapping for rides from Supabase
+    const { data: metadata, error: metaError } = await supabase
       .from('metadata')
       .select('id, external_id')
 
     if (metaError) {
-      console.error('Metadata error:', metaError)
+      console.error('Supabase error fetching metadata')
       process.exit(1)
     }
 
@@ -188,89 +193,68 @@ async function runEnhancedCollection() {
       metadata?.map(m => [m.external_id, m.id]) || []
     )
 
-    // Get ride mappings (if exists)
-    const { data: rideMappings } = await db
+    // Get ride mappings from Supabase
+    const { data: rideMappings } = await supabase
       .from('ride_mappings')
       .select('queue_times_id, themeparks_id')
-    
+
     const rideMap = new Map(
       rideMappings?.map(r => [r.queue_times_id, r.themeparks_id]) || []
     )
 
     const timestamp = new Date().toISOString()
+    const weatherRecords = []
+    const waitTimeRecords = []
 
     // Process all locations
     for (const location of locations) {
       process.stdout.write(`Processing ${location.name}...`)
 
       try {
-        const tasks = []
         let queueTimesData: any[] = []
         let themeparksData: any[] = []
 
         // Collect weather if coordinates available
         if (location.lat && location.lon) {
-          tasks.push(
-            collectWeather(location.lat, location.lon).then(async (data) => {
-              if (data) {
-                const { error } = await db
-                  .from('weather_data')
-                  .insert({
-                    location_id: location.id,
-                    temperature: data.temp,
-                    feels_like: data.feels,
-                    precipitation: data.precip,
-                    humidity: data.humid,
-                    wind_speed: data.wind_s,
-                    uv_index: data.uv,
-                    weather_code: data.code,
-                    weather_type: getWeatherType(data.code || 0),
-                    recorded_at: timestamp,
-                    source: 'open_meteo'
-                  })
-                
-                if (!error) {
-                  stats.weather++
-                  return 'W'
-                }
-              }
-              return null
+          const weatherData = await collectWeather(location.lat, location.lon)
+          if (weatherData) {
+            weatherRecords.push({
+              location_id: location.id,
+              park_id: location.id, // Add park_id for TursoDB
+              temperature: weatherData.temp,
+              feels_like: weatherData.feels,
+              precipitation: weatherData.precip,
+              humidity: weatherData.humid,
+              wind_speed: weatherData.wind_s,
+              uv_index: weatherData.uv,
+              weather_code: weatherData.code,
+              weather_description: getWeatherType(weatherData.code || 0),
+              recorded_at: timestamp,
+              source: 'open_meteo'
             })
-          )
+            stats.weather++
+          }
         }
 
         // Collect from both queue APIs if external ID available
         if (location.external_id) {
           // Queue-Times collection
-          tasks.push(
-            collectQueueTimes(location.external_id).then(data => {
-              if (data && data.length > 0) {
-                queueTimesData = data
-                stats.queueTimesData += data.length
-                return 'Q'
-              }
-              return null
-            })
-          )
+          const queueData = await collectQueueTimes(location.external_id)
+          if (queueData && queueData.length > 0) {
+            queueTimesData = queueData
+            stats.queueTimesData += queueData.length
+          }
 
           // ThemeParks.wiki collection if mapping exists
           const themeparksId = parkMappings.get(location.external_id)
           if (themeparksId) {
-            tasks.push(
-              collectThemeParks(themeparksId).then(data => {
-                if (data && data.length > 0) {
-                  themeparksData = data
-                  stats.themeparksData += data.length
-                  return 'T'
-                }
-                return null
-              })
-            )
+            const tpData = await collectThemeParks(themeparksId)
+            if (tpData && tpData.length > 0) {
+              themeparksData = tpData
+              stats.themeparksData += tpData.length
+            }
           }
         }
-
-        const results = await Promise.all(tasks)
-        const sources = results.filter(Boolean).join('')
 
         // Aggregate wait times if we have ride data
         if (queueTimesData.length > 0 || themeparksData.length > 0) {
@@ -282,7 +266,7 @@ async function runEnhancedCollection() {
 
           stats.aggregated += aggregatedData.length
 
-          // Store aggregated data
+          // Prepare wait time records for TursoDB
           for (const ride of aggregatedData) {
             const metaId = metaMap.get(parseInt(ride.rideId))
             if (!metaId) continue
@@ -292,31 +276,26 @@ async function runEnhancedCollection() {
             else if (ride.confidenceScore >= 0.6) stats.mediumConfidence++
             else stats.lowConfidence++
 
-            const { error } = await db
-              .from('wait_times')
-              .insert({
-                item_id: metaId,
-                wait_time: ride.aggregatedWait,
-                queue_times_wait: ride.queueTimesWait,
-                themeparks_wait: ride.themeparksWait,
-                confidence_score: ride.confidenceScore,
-                is_open: ride.isOpen,
-                single_rider_time: ride.singleRiderTime,
-                source: sources.includes('Q') && sources.includes('T') ? 'dual' : 
-                        sources.includes('Q') ? 'queue_times' : 'themeparks',
-                recorded_at: timestamp
-              })
-            
-            if (!error) {
-              stats.stored++
-            }
+            waitTimeRecords.push({
+              id: crypto.randomUUID(),
+              item_id: metaId,
+              park_id: location.id,
+              wait_time: ride.aggregatedWait,
+              queue_times_wait: ride.queueTimesWait,
+              themeparks_wait: ride.themeparksWait,
+              confidence: ride.confidenceScore,
+              is_open: ride.isOpen !== false,
+              source: (queueTimesData.length > 0 && themeparksData.length > 0) ? 'dual' :
+                      queueTimesData.length > 0 ? 'queue_times' : 'themeparks',
+              recorded_at: timestamp
+            })
           }
         }
-        
+
         const elapsed = Date.now() - startTime
-        console.log(` [${sources || '-'}] ${elapsed}ms`)
-        
+        console.log(` [WQ] ${elapsed}ms`)
         stats.processed++
+
       } catch (error) {
         console.log(' [ERROR]')
         console.error(error)
@@ -324,16 +303,21 @@ async function runEnhancedCollection() {
       }
     }
 
-    // Cleanup old data
-    const { error: cleanupErr } = await db.rpc('cleanup_old_data')
-    if (!cleanupErr) {
-      console.log('Cleaned old records')
+    // Write data to TursoDB in batches
+    console.log('\n📝 Writing data to TursoDB...')
+
+    if (weatherRecords.length > 0) {
+      console.log(`Writing ${weatherRecords.length} weather records...`)
+      const weatherResult = await writeWeatherToTurso(weatherRecords)
+      stats.stored_weather = weatherResult.inserted
+      console.log(`✅ Weather: ${weatherResult.inserted}/${weatherResult.total} records written`)
     }
 
-    // Aggregate stats
-    const { error: aggregateErr } = await db.rpc('aggregate_hourly_stats')
-    if (!aggregateErr) {
-      console.log('Aggregated hourly statistics')
+    if (waitTimeRecords.length > 0) {
+      console.log(`Writing ${waitTimeRecords.length} wait time records...`)
+      const waitResult = await writeWaitTimesToTurso(waitTimeRecords)
+      stats.stored_wait_times = waitResult.inserted
+      console.log(`✅ Wait times: ${waitResult.inserted}/${waitResult.total} records written`)
     }
 
     // Summary
@@ -341,16 +325,17 @@ async function runEnhancedCollection() {
     console.log('---')
     console.log(`Complete in ${(totalTime / 1000).toFixed(1)}s`)
     console.log(`Processed: ${stats.processed}/${stats.locations}`)
-    console.log(`Weather: ${stats.weather}`)
+    console.log(`Weather collected: ${stats.weather}`)
+    console.log(`Weather stored: ${stats.stored_weather}`)
     console.log(`Queue-Times rides: ${stats.queueTimesData}`)
     console.log(`ThemeParks.wiki rides: ${stats.themeparksData}`)
     console.log(`Aggregated rides: ${stats.aggregated}`)
-    console.log(`Stored: ${stats.stored}`)
+    console.log(`Wait times stored: ${stats.stored_wait_times}`)
     console.log(`Confidence - High: ${stats.highConfidence}, Medium: ${stats.mediumConfidence}, Low: ${stats.lowConfidence}`)
     if (stats.errors > 0) {
       console.log(`Errors: ${stats.errors}`)
     }
-    
+
     process.exit(0)
 
   } catch (error) {
