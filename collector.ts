@@ -3,11 +3,18 @@
 /**
  * Generic park metrics collection utility
  * Aggregates publicly available queue time data
- * NOW WRITES TO TURSODB for historical data storage
+ * DUAL-WRITE: Writes to BOTH TursoDB and Supabase for transition period
  */
 
 import * as dotenv from 'dotenv'
-import { supabase, writeWaitTimesToTurso, writeWeatherToTurso } from './lib/database-clients'
+import {
+  supabase,
+  writeWaitTimesToTurso,
+  writeWeatherToTurso,
+  writeWaitTimesToSupabase,
+  writeWeatherToSupabase,
+  isDualWriteEnabled
+} from './lib/database-clients'
 
 // Load environment
 dotenv.config()
@@ -121,13 +128,24 @@ async function runCollection() {
   console.log(`Time: ${new Date().toISOString()}`)
   console.log('🗃️  Writing to TursoDB for historical data storage')
 
+  const dualWriteActive = isDualWriteEnabled()
+  if (dualWriteActive) {
+    console.log('📦 DUAL-WRITE ENABLED: Also writing to Supabase')
+  } else {
+    console.log('⚠️  Supabase dual-write disabled (add SUPABASE_SERVICE_ROLE_KEY to enable)')
+  }
+
   const stats = {
     locations: 0,
     processed: 0,
     weather: 0,
     queues: 0,
-    stored_wait_times: 0,
-    stored_weather: 0,
+    // Turso stats
+    turso_wait_times: 0,
+    turso_weather: 0,
+    // Supabase stats
+    supabase_wait_times: 0,
+    supabase_weather: 0,
     errors: 0
   }
 
@@ -228,32 +246,60 @@ async function runCollection() {
       }
     }
 
-    // Write data to TursoDB in batches
+    // Write data to TursoDB first
     console.log('\n📝 Writing data to TursoDB...')
 
     if (weatherRecords.length > 0) {
-      console.log(`Writing ${weatherRecords.length} weather records...`)
+      console.log(`Writing ${weatherRecords.length} weather records to Turso...`)
       const weatherResult = await writeWeatherToTurso(weatherRecords)
-      stats.stored_weather = weatherResult.inserted
-      console.log(`✅ Weather: ${weatherResult.inserted}/${weatherResult.total} records written`)
+      stats.turso_weather = weatherResult.inserted
+      console.log(`✅ Turso Weather: ${weatherResult.inserted}/${weatherResult.total} records written`)
     }
 
     if (waitTimeRecords.length > 0) {
-      console.log(`Writing ${waitTimeRecords.length} wait time records...`)
+      console.log(`Writing ${waitTimeRecords.length} wait time records to Turso...`)
       const waitResult = await writeWaitTimesToTurso(waitTimeRecords)
-      stats.stored_wait_times = waitResult.inserted
-      console.log(`✅ Wait times: ${waitResult.inserted}/${waitResult.total} records written`)
+      stats.turso_wait_times = waitResult.inserted
+      console.log(`✅ Turso Wait times: ${waitResult.inserted}/${waitResult.total} records written`)
+    }
+
+    // DUAL-WRITE: Also write to Supabase if enabled
+    if (dualWriteActive) {
+      console.log('\n📝 Writing data to Supabase (dual-write)...')
+
+      if (weatherRecords.length > 0) {
+        console.log(`Writing ${weatherRecords.length} weather records to Supabase...`)
+        const supabaseWeatherResult = await writeWeatherToSupabase(weatherRecords)
+        stats.supabase_weather = supabaseWeatherResult.inserted
+        console.log(`✅ Supabase Weather: ${supabaseWeatherResult.inserted}/${supabaseWeatherResult.total} records written`)
+      }
+
+      if (waitTimeRecords.length > 0) {
+        console.log(`Writing ${waitTimeRecords.length} wait time records to Supabase...`)
+        const supabaseWaitResult = await writeWaitTimesToSupabase(waitTimeRecords)
+        stats.supabase_wait_times = supabaseWaitResult.inserted
+        console.log(`✅ Supabase Wait times: ${supabaseWaitResult.inserted}/${supabaseWaitResult.total} records written`)
+      }
     }
 
     // Summary
     const totalTime = Date.now() - startTime
-    console.log('---')
+    console.log('\n---')
     console.log(`Complete in ${(totalTime / 1000).toFixed(1)}s`)
     console.log(`Processed: ${stats.processed}/${stats.locations}`)
     console.log(`Weather collected: ${stats.weather}`)
-    console.log(`Weather stored: ${stats.stored_weather}`)
     console.log(`Queues collected: ${stats.queues}`)
-    console.log(`Wait times stored: ${stats.stored_wait_times}`)
+    console.log('\n📊 Database Writes:')
+    console.log(`  TursoDB:`)
+    console.log(`    - Weather: ${stats.turso_weather}`)
+    console.log(`    - Wait times: ${stats.turso_wait_times}`)
+    if (dualWriteActive) {
+      console.log(`  Supabase:`)
+      console.log(`    - Weather: ${stats.supabase_weather}`)
+      console.log(`    - Wait times: ${stats.supabase_wait_times}`)
+    } else {
+      console.log(`  Supabase: DISABLED`)
+    }
     if (stats.errors > 0) {
       console.log(`Errors: ${stats.errors}`)
     }

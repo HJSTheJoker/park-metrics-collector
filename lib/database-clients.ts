@@ -120,10 +120,10 @@ export async function writeWeatherToTurso(records: any[]) {
 // Helper functions for record counts and verification
 export async function getTursoTableStats() {
   const turso = getTursoClient()
-  
-  const tables = ['ride_wait_time_history', 'park_weather_history', 'park_news', 
+
+  const tables = ['ride_wait_time_history', 'park_weather_history', 'park_news',
                  'prediction_features', 'predictions', 'activity_feed', 'prediction_accuracy']
-  
+
   const stats = {}
   for (const table of tables) {
     try {
@@ -133,6 +133,128 @@ export async function getTursoTableStats() {
       stats[table] = 0
     }
   }
-  
+
   return stats
+}
+
+// ============================================================
+// DUAL-WRITE: Supabase write functions
+// These enable writing to Supabase in addition to TursoDB
+// ============================================================
+
+// Check if dual-write is enabled (requires Supabase service role key)
+export function isDualWriteEnabled(): boolean {
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  return !!serviceKey && serviceKey.length > 0
+}
+
+// Helper to write wait times to Supabase
+export async function writeWaitTimesToSupabase(records: any[]) {
+  if (!isDualWriteEnabled()) {
+    console.log('⚠️  Supabase dual-write disabled (no SUPABASE_SERVICE_ROLE_KEY)')
+    return { inserted: 0, total: records.length, skipped: true }
+  }
+
+  // Use service role client for writes
+  const serviceClient = createSupabase(
+    process.env.SUPABASE_URL || process.env.DB_CONNECTION!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
+
+  let inserted = 0
+  const BATCH_SIZE = 100
+
+  // Process in batches for efficiency
+  for (let i = 0; i < records.length; i += BATCH_SIZE) {
+    const batch = records.slice(i, i + BATCH_SIZE)
+
+    const formattedRecords = batch.map(record => ({
+      id: record.id?.toString() || crypto.randomUUID(),
+      ride_id: record.item_id?.toString(),
+      park_id: record.park_id?.toString() || null,
+      wait_time: record.wait_time || 0,
+      is_open: record.is_open !== false,
+      status: record.status || null,
+      source: record.source || 'queue_times',
+      confidence: record.confidence || 1.0,
+      recorded_at: record.recorded_at || new Date().toISOString()
+    }))
+
+    try {
+      const { error } = await serviceClient
+        .from('ride_wait_time_history')
+        .upsert(formattedRecords, {
+          onConflict: 'id',
+          ignoreDuplicates: false
+        })
+
+      if (error) {
+        console.error('Supabase wait time batch error:', error.message)
+      } else {
+        inserted += batch.length
+      }
+    } catch (error) {
+      console.error('Error writing wait times to Supabase:', error)
+    }
+  }
+
+  return { inserted, total: records.length, skipped: false }
+}
+
+// Helper to write weather data to Supabase
+export async function writeWeatherToSupabase(records: any[]) {
+  if (!isDualWriteEnabled()) {
+    console.log('⚠️  Supabase dual-write disabled (no SUPABASE_SERVICE_ROLE_KEY)')
+    return { inserted: 0, total: records.length, skipped: true }
+  }
+
+  // Use service role client for writes
+  const serviceClient = createSupabase(
+    process.env.SUPABASE_URL || process.env.DB_CONNECTION!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
+
+  let inserted = 0
+  const BATCH_SIZE = 100
+
+  for (let i = 0; i < records.length; i += BATCH_SIZE) {
+    const batch = records.slice(i, i + BATCH_SIZE)
+
+    const formattedRecords = batch.map(record => ({
+      id: record.id?.toString() || crypto.randomUUID(),
+      park_id: record.location_id?.toString() || null,
+      temperature: record.temperature,
+      feels_like: record.feels_like,
+      precipitation: record.precipitation,
+      humidity: record.humidity,
+      wind_speed: record.wind_speed,
+      uv_index: record.uv_index,
+      weather_code: record.weather_code,
+      weather_description: record.weather_type,
+      cloud_cover: record.cloud_cover || null,
+      visibility: record.visibility || null,
+      pressure: record.pressure || null,
+      recorded_at: record.recorded_at || new Date().toISOString(),
+      source: record.source || 'open_meteo'
+    }))
+
+    try {
+      const { error } = await serviceClient
+        .from('park_weather_history')
+        .upsert(formattedRecords, {
+          onConflict: 'id',
+          ignoreDuplicates: false
+        })
+
+      if (error) {
+        console.error('Supabase weather batch error:', error.message)
+      } else {
+        inserted += batch.length
+      }
+    } catch (error) {
+      console.error('Error writing weather to Supabase:', error)
+    }
+  }
+
+  return { inserted, total: records.length, skipped: false }
 }
