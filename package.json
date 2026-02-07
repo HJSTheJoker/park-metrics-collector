@@ -3,8 +3,13 @@
   "version": "1.0.0",
   "description": "Data aggregation utility",
   "main": "collector.ts",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
-    "collect": "tsx collector.ts"
+    "collect": "tsx collector.ts",
+    "enhanced": "tsx enhanced-collector.ts",
+    "test:apis": "tsx test-apis.ts"
   },
   "keywords": ["data", "metrics", "collection"],
   "author": "",
