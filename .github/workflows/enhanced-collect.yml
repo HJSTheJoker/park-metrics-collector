@@ -1,8 +1,10 @@
 name: Enhanced Data Collection
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'  # Every 5 minutes
+  # Disabled: prefer triggering Parkfolio's own cron endpoint to avoid multiple
+  # independent writers and reduce duplicate inserts.
+  # schedule:
+  #   - cron: '*/5 * * * *'  # Every 5 minutes
   workflow_dispatch:        # Allow manual trigger
 
 permissions:
