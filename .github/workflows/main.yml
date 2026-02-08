@@ -1,7 +1,9 @@
 name: Collect Queue Times
 on:
-  schedule:
-    - cron: "*/15 * * * *"  # every 15 minutes (UTC)
+  # Disabled: prefer a single scheduled trigger via collect-parkfolio.yml to
+  # avoid duplicate runs against the Parkfolio cron endpoint.
+  # schedule:
+  #   - cron: "*/15 * * * *"  # every 15 minutes (UTC)
   workflow_dispatch:
 
 permissions:
