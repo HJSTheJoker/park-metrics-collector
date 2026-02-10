@@ -2,6 +2,9 @@
 
 A simple utility for aggregating theme park wait time data from public sources.
 
+This repo also acts as the **canonical scheduler** for Parkfolio ingestion via GitHub Actions:
+- `.github/workflows/collect-parkfolio.yml` calls the Parkfolio Vercel cron endpoint on a schedule.
+
 ## Purpose
 
 This tool collects publicly available queue time data for research purposes.
@@ -24,6 +27,11 @@ This tool collects publicly available queue time data for research purposes.
 DB_CONNECTION=your_database_url
 DB_AUTH=your_database_key
 ```
+
+### GitHub Actions Secrets (for `collect-parkfolio.yml`)
+
+- `CRON_SECRET`: must match `CRON_SECRET` configured in the Parkfolio Vercel project
+- `BASE_URL` (optional): defaults to `https://parkfolio.vercel.app`
 
 ## License
 
