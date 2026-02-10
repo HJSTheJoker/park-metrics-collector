@@ -1,0 +1,95 @@
+name: Migrate Parkfolio Data To Turso (Safe Copy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      parkfolio_ref:
+        description: "Parkfolio git ref to migrate from (branch, tag, or SHA)"
+        required: true
+        default: "main"
+      tables:
+        description: "Comma-separated tables to migrate (e.g. ride_wait_time_history,park_weather_history)"
+        required: true
+        default: "ride_wait_time_history,park_weather_history"
+      all_data:
+        description: "Copy ALL rows (true) or only rows older than cutoff (false)"
+        required: true
+        default: "true"
+      dry_run:
+        description: "Dry-run (true) prints counts only, no writes"
+        required: true
+        default: "false"
+      no_delete:
+        description: "Safe mode (true) keeps data in Supabase too"
+        required: true
+        default: "true"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parkfolio-turso-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout Parkfolio repo
+        uses: actions/checkout@v4
+        with:
+          repository: HJSTheJoker/parkfolio
+          ref: ${{ inputs.parkfolio_ref }}
+          path: parkfolio
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Cache migration checkpoints
+        uses: actions/cache@v4
+        with:
+          path: parkfolio/.migration-checkpoints
+          key: parkfolio-turso-migration-${{ github.ref }}-${{ inputs.tables }}
+          restore-keys: |
+            parkfolio-turso-migration-${{ github.ref }}-
+
+      - name: Install dependencies (Parkfolio)
+        working-directory: parkfolio
+        run: pnpm install --frozen-lockfile
+
+      - name: Run migration (safe copy + resume)
+        working-directory: parkfolio
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS+=("--dry-run")
+          fi
+
+          if [ "${{ inputs.no_delete }}" = "true" ]; then
+            ARGS+=("--no-delete")
+          fi
+
+          if [ "${{ inputs.all_data }}" = "true" ]; then
+            ARGS+=("--all")
+          fi
+
+          ARGS+=("--resume")
+          ARGS+=("--tables=${{ inputs.tables }}")
+
+          echo "Running: npx tsx scripts/migrate-to-turso.ts ${ARGS[*]}"
+          npx tsx scripts/migrate-to-turso.ts "${ARGS[@]}"
