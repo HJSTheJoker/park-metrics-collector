@@ -1,7 +1,10 @@
 name: Collect Queue Times
 on:
-  schedule:
-    - cron: "*/15 * * * *"  # every 15 minutes (UTC)
+  # DISABLED: Use `.github/workflows/collect-parkfolio.yml` as the single source of truth.
+  # Keeping multiple schedules active can cause double-ingestion and confusing data.
+  #
+  # schedule:
+  #   - cron: "*/15 * * * *"  # every 15 minutes (UTC)
   workflow_dispatch:
 
 permissions:

@@ -1,8 +1,11 @@
 name: Data Collection
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
+  # DISABLED: Legacy collector workflow (schema + secrets drifted).
+  # Use `.github/workflows/collect-parkfolio.yml` as the single source of truth.
+  #
+  # schedule:
+  #   - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:
