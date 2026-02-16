@@ -23,7 +23,12 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           set -euo pipefail
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "CRON_SECRET is not configured."
+            exit 1
+          fi
           BASE_URL="${BASE_URL:-https://parkfolio.vercel.app}"
+          BASE_URL="${BASE_URL%/}"
           echo "Health check…"
           curl -fsSL "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET&quick=true" >/dev/null
           echo "OK"
@@ -34,7 +39,12 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           set -euo pipefail
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "CRON_SECRET is not configured."
+            exit 1
+          fi
           BASE_URL="${BASE_URL:-https://parkfolio.vercel.app}"
+          BASE_URL="${BASE_URL%/}"
           echo "Triggering Parkfolio cron collector…"
           # retry up to 3 times in case of transient network issues
           for i in 1 2 3; do

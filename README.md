@@ -33,6 +33,11 @@ DB_AUTH=your_database_key
 - `CRON_SECRET`: must match `CRON_SECRET` configured in the Parkfolio Vercel project
 - `BASE_URL` (optional): defaults to `https://parkfolio.vercel.app`
 
+Secret ownership note:
+- `CRON_SECRET` is rotated from `HJSTheJoker/parkfolio` via `.github/workflows/rotate-cron-secret.yml`.
+- That workflow updates both repos (`parkfolio` and `park-metrics-collector`) to keep scheduler auth in sync.
+- If collector runs start returning `401`, manually trigger `Rotate CRON_SECRET` in `parkfolio`, then run `Parkfolio Collector` once in this repo to verify recovery.
+
 ## License
 
 MIT
