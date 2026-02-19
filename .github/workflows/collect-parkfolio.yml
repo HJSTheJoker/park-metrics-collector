@@ -36,12 +36,77 @@ jobs:
           echo "Triggering Parkfolio cron collector…"
           # retry up to 3 times in case of transient network issues
           for i in 1 2 3; do
-            if RESP="$(curl -fsSL "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET")"; then
-              echo "$RESP"
-              exit 0
+            TMP_BODY="$(mktemp)"
+            HTTP_STATUS="$(curl -sS -o "$TMP_BODY" -w "%{http_code}" "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET" || echo "000")"
+            RESP="$(cat "$TMP_BODY")"
+            rm -f "$TMP_BODY"
+
+            if [ "$HTTP_STATUS" = "000" ]; then
+              echo "Network error on attempt $i/3"
+              sleep 5
+              continue
             fi
-            echo "Retry $i/3…"
-            sleep 5
+
+            echo "Collector HTTP status: $HTTP_STATUS"
+            echo "$RESP"
+
+            if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+              # Retry only for server-side errors; fail fast for auth/client issues.
+              if [ "$HTTP_STATUS" -ge 500 ] && [ "$i" -lt 3 ]; then
+                echo "Server error on attempt $i/3, retrying…"
+                sleep 5
+                continue
+              fi
+              echo "Collector returned non-2xx response ($HTTP_STATUS)" >&2
+              exit 1
+            fi
+
+            COLLECT_RESP="$RESP" node - <<'NODE'
+            const fail = (msg) => {
+              console.error(msg)
+              process.exit(1)
+            }
+
+            let parsed
+            try {
+              parsed = JSON.parse(process.env.COLLECT_RESP || '{}')
+            } catch (error) {
+              fail(`Collector response is not valid JSON: ${String(error)}`)
+            }
+
+            if (parsed.success !== true) {
+              fail(`Collector reported success=false (runId=${parsed.runId ?? 'unknown'})`)
+            }
+
+            const stats = parsed.stats || {}
+            const tursoWait = Number(stats.tursoWaitInserted ?? 0)
+            const tursoWeather = Number(stats.tursoWeatherInserted ?? 0)
+            if (tursoWait === 0 && tursoWeather === 0) {
+              fail(`Critical: Turso insert counters are zero (wait=${tursoWait}, weather=${tursoWeather})`)
+            }
+
+            const timedOutParks = Number(stats.timedOutParks ?? 0)
+            const parksTargeted = Number(stats.parksTargeted ?? 0)
+            const timeoutRate = Number.isFinite(Number(stats.timeoutRate))
+              ? Number(stats.timeoutRate)
+              : (parksTargeted > 0 ? timedOutParks / parksTargeted : 0)
+
+            if (timeoutRate >= 0.2) {
+              fail(
+                `Critical: timeout threshold breached (${timedOutParks}/${parksTargeted} parks, rate=${timeoutRate.toFixed(3)})`
+              )
+            }
+
+            if (parsed.criticalFailure === true) {
+              fail(`Collector flagged criticalFailure=true (runId=${parsed.runId ?? 'unknown'})`)
+            }
+
+            console.log(
+              `Validated collector run ${parsed.runId ?? 'unknown'}: parksProcessed=${stats.parksProcessed ?? 'n/a'}, tursoWait=${tursoWait}, tursoWeather=${tursoWeather}, timeoutRate=${timeoutRate.toFixed(3)}`
+            )
+            NODE
+
+            exit 0
           done
           echo "Failed to trigger Parkfolio cron after retries" >&2
           exit 1
