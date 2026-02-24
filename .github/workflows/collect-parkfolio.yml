@@ -157,7 +157,7 @@ jobs:
             console.log(
               `Validated collector run ${parsed.runId ?? 'unknown'}: contract=${contractVersion}, parksProcessed=${parksProcessed}, supabaseWait=${supabaseWait}, tursoWait=${tursoWait}, supabaseWeather=${supabaseWeather}, tursoWeather=${tursoWeather}, timeoutRate=${timeoutRate.toFixed(3)}`
             )
-            NODE
+NODE
 
             exit 0
           done
