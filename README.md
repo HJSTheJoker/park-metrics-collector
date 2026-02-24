@@ -37,6 +37,34 @@ SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 - `npm run enhanced` - enhanced collection with ThemeParks mapping and confidence scoring
 - `npm run test:apis` - lightweight API reachability test harness
 
+## Canonical Scheduler
+
+This repository is the canonical scheduler for Parkfolio ingestion:
+- `.github/workflows/collect-parkfolio.yml` calls `parkfolio.vercel.app/api/cron/collect-queue-times`.
+
+Required GitHub Actions secrets for this scheduler:
+- `CRON_SECRET` (must match Vercel `CRON_SECRET` in the Parkfolio project)
+- `BASE_URL` (optional override, default is production URL)
+
+## Collector Response Contract
+
+The scheduler enforces a strict response contract before a run is considered healthy:
+- `contractVersion` must be `collect-queue-times/v1`
+- numeric fields must be present:
+  - `supabaseWaitInserted`
+  - `tursoWaitInserted`
+  - `supabaseWeatherInserted`
+  - `tursoWeatherInserted`
+  - `parksTargeted`
+  - `parksProcessed`
+  - `timedOutParks`
+  - `timeoutRate`
+
+Fail-fast policy:
+- if parks were processed, both Supabase and Turso wait insert counters must be greater than zero
+- if weather-eligible parks were processed, both Supabase and Turso weather insert counters must be greater than zero
+- timeout rate must stay below the critical threshold
+
 ## License
 
 MIT
