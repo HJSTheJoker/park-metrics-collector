@@ -46,10 +46,11 @@ jobs:
           BASE_URL="${BASE_URL:-https://parkfolio.vercel.app}"
           BASE_URL="${BASE_URL%/}"
           echo "Triggering Parkfolio cron collector…"
-          # retry up to 3 times in case of transient network issues
-          for i in 1 2 3; do
+          # The full collection can take a while; allow enough time for one run.
+          # Retry once for transient failures.
+          for i in 1 2; do
             TMP_BODY="$(mktemp)"
-            HTTP_STATUS="$(curl -sS --connect-timeout 10 --max-time 30 -o "$TMP_BODY" -w "%{http_code}" "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET" || true)"
+            HTTP_STATUS="$(curl -sS --connect-timeout 10 --max-time 180 -o "$TMP_BODY" -w "%{http_code}" "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET" || true)"
             if ! [[ "$HTTP_STATUS" =~ ^[0-9]{3}$ ]]; then
               HTTP_STATUS="000"
             fi
@@ -57,7 +58,7 @@ jobs:
             rm -f "$TMP_BODY"
 
             if [ "$HTTP_STATUS" = "000" ]; then
-              echo "Network error on attempt $i/3"
+              echo "Network/timeout error on attempt $i/2"
               sleep 5
               continue
             fi
@@ -67,8 +68,8 @@ jobs:
 
             if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
               # Retry only for server-side errors; fail fast for auth/client issues.
-              if [ "$HTTP_STATUS" -ge 500 ] && [ "$i" -lt 3 ]; then
-                echo "Server error on attempt $i/3, retrying…"
+              if [ "$HTTP_STATUS" -ge 500 ] && [ "$i" -lt 2 ]; then
+                echo "Server error on attempt $i/2, retrying…"
                 sleep 5
                 continue
               fi
