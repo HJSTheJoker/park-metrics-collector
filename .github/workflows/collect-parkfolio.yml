@@ -73,91 +73,86 @@ jobs:
               exit 1
             fi
 
-            COLLECT_RESP="$RESP" node - <<'NODE'
-            const fail = (msg) => {
-              console.error(msg)
-              process.exit(1)
-            }
+            if ! printf '%s' "$RESP" | jq -e . >/dev/null 2>&1; then
+              echo "Collector response is not valid JSON" >&2
+              exit 1
+            fi
 
-            let parsed
-            try {
-              parsed = JSON.parse(process.env.COLLECT_RESP || '{}')
-            } catch (error) {
-              fail(`Collector response is not valid JSON: ${String(error)}`)
-            }
+            success="$(printf '%s' "$RESP" | jq -r '.success // false')"
+            run_id="$(printf '%s' "$RESP" | jq -r '.runId // \"unknown\"')"
+            contract_version="$(printf '%s' "$RESP" | jq -r '.contractVersion // empty')"
 
-            if (parsed.success !== true) {
-              fail(`Collector reported success=false (runId=${parsed.runId ?? 'unknown'})`)
-            }
+            if [ "$success" != "true" ]; then
+              echo "Collector reported success=false (runId=$run_id)" >&2
+              exit 1
+            fi
 
-            const contractVersion = String(parsed.contractVersion ?? '')
-            if (contractVersion !== 'collect-queue-times/v1') {
-              fail(`Collector contract mismatch (expected collect-queue-times/v1, got ${contractVersion || 'missing'})`)
-            }
+            if [ "$contract_version" != "collect-queue-times/v1" ]; then
+              echo "Collector contract mismatch (expected collect-queue-times/v1, got ${contract_version:-missing})" >&2
+              exit 1
+            fi
 
-            const stats = parsed.stats || {}
-            const requiredNumericFields = [
-              'supabaseWaitInserted',
-              'supabaseWeatherInserted',
-              'tursoWaitInserted',
-              'tursoWeatherInserted',
-              'parksTargeted',
-              'parksProcessed',
-              'timedOutParks',
-              'timeoutRate',
-            ]
-
-            for (const field of requiredNumericFields) {
-              const value = Number(stats[field])
-              if (!Number.isFinite(value)) {
-                fail(`Collector response missing numeric stats field: ${field}`)
-              }
-            }
-
-            const supabaseWait = Number(stats.supabaseWaitInserted ?? 0)
-            const supabaseWeather = Number(stats.supabaseWeatherInserted ?? 0)
-            const tursoWait = Number(stats.tursoWaitInserted ?? 0)
-            const tursoWeather = Number(stats.tursoWeatherInserted ?? 0)
-            const parksProcessed = Number(stats.parksProcessed ?? 0)
-            const weatherEligibleParksProcessed = Number(stats.weatherEligibleParksProcessed ?? 0)
-
-            if (parksProcessed > 0 && supabaseWait === 0) {
-              fail(`Critical: Supabase wait insert counter is zero after processing parks (${parksProcessed})`)
-            }
-            if (parksProcessed > 0 && tursoWait === 0) {
-              fail(`Critical: Turso wait insert counter is zero after processing parks (${parksProcessed})`)
-            }
-            if (weatherEligibleParksProcessed > 0 && supabaseWeather === 0) {
-              fail(
-                `Critical: Supabase weather insert counter is zero after processing weather-eligible parks (${weatherEligibleParksProcessed})`
-              )
-            }
-            if (weatherEligibleParksProcessed > 0 && tursoWeather === 0) {
-              fail(
-                `Critical: Turso weather insert counter is zero after processing weather-eligible parks (${weatherEligibleParksProcessed})`
-              )
-            }
-
-            const timedOutParks = Number(stats.timedOutParks ?? 0)
-            const parksTargeted = Number(stats.parksTargeted ?? 0)
-            const timeoutRate = Number.isFinite(Number(stats.timeoutRate))
-              ? Number(stats.timeoutRate)
-              : (parksTargeted > 0 ? timedOutParks / parksTargeted : 0)
-
-            if (timeoutRate >= 0.2) {
-              fail(
-                `Critical: timeout threshold breached (${timedOutParks}/${parksTargeted} parks, rate=${timeoutRate.toFixed(3)})`
-              )
-            }
-
-            if (parsed.criticalFailure === true) {
-              fail(`Collector flagged criticalFailure=true (runId=${parsed.runId ?? 'unknown'})`)
-            }
-
-            console.log(
-              `Validated collector run ${parsed.runId ?? 'unknown'}: contract=${contractVersion}, parksProcessed=${parksProcessed}, supabaseWait=${supabaseWait}, tursoWait=${tursoWait}, supabaseWeather=${supabaseWeather}, tursoWeather=${tursoWeather}, timeoutRate=${timeoutRate.toFixed(3)}`
+            required_numeric_fields=(
+              "supabaseWaitInserted:.stats.supabaseWaitInserted"
+              "supabaseWeatherInserted:.stats.supabaseWeatherInserted"
+              "tursoWaitInserted:.stats.tursoWaitInserted"
+              "tursoWeatherInserted:.stats.tursoWeatherInserted"
+              "parksTargeted:.stats.parksTargeted"
+              "parksProcessed:.stats.parksProcessed"
+              "weatherEligibleParksProcessed:.stats.weatherEligibleParksProcessed"
+              "timedOutParks:.stats.timedOutParks"
+              "timeoutRate:.stats.timeoutRate"
             )
-NODE
+
+            for pair in "${required_numeric_fields[@]}"; do
+              field="${pair%%:*}"
+              jq_path="${pair#*:}"
+              value="$(printf '%s' "$RESP" | jq -r "${jq_path} // empty")"
+              if ! [[ "$value" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+                echo "Collector response missing numeric stats field: $field" >&2
+                exit 1
+              fi
+            done
+
+            supabase_wait="$(printf '%s' "$RESP" | jq -r '.stats.supabaseWaitInserted')"
+            supabase_weather="$(printf '%s' "$RESP" | jq -r '.stats.supabaseWeatherInserted')"
+            turso_wait="$(printf '%s' "$RESP" | jq -r '.stats.tursoWaitInserted')"
+            turso_weather="$(printf '%s' "$RESP" | jq -r '.stats.tursoWeatherInserted')"
+            parks_processed="$(printf '%s' "$RESP" | jq -r '.stats.parksProcessed')"
+            weather_eligible_processed="$(printf '%s' "$RESP" | jq -r '.stats.weatherEligibleParksProcessed')"
+            timed_out_parks="$(printf '%s' "$RESP" | jq -r '.stats.timedOutParks')"
+            parks_targeted="$(printf '%s' "$RESP" | jq -r '.stats.parksTargeted')"
+            timeout_rate="$(printf '%s' "$RESP" | jq -r '.stats.timeoutRate')"
+            critical_failure="$(printf '%s' "$RESP" | jq -r '.criticalFailure // false')"
+
+            if [ "$parks_processed" -gt 0 ] && [ "$supabase_wait" -eq 0 ]; then
+              echo "Critical: Supabase wait insert counter is zero after processing parks ($parks_processed)" >&2
+              exit 1
+            fi
+            if [ "$parks_processed" -gt 0 ] && [ "$turso_wait" -eq 0 ]; then
+              echo "Critical: Turso wait insert counter is zero after processing parks ($parks_processed)" >&2
+              exit 1
+            fi
+            if [ "$weather_eligible_processed" -gt 0 ] && [ "$supabase_weather" -eq 0 ]; then
+              echo "Critical: Supabase weather insert counter is zero after processing weather-eligible parks ($weather_eligible_processed)" >&2
+              exit 1
+            fi
+            if [ "$weather_eligible_processed" -gt 0 ] && [ "$turso_weather" -eq 0 ]; then
+              echo "Critical: Turso weather insert counter is zero after processing weather-eligible parks ($weather_eligible_processed)" >&2
+              exit 1
+            fi
+
+            if awk "BEGIN {exit !($timeout_rate >= 0.2)}"; then
+              echo "Critical: timeout threshold breached (${timed_out_parks}/${parks_targeted} parks, rate=${timeout_rate})" >&2
+              exit 1
+            fi
+
+            if [ "$critical_failure" = "true" ]; then
+              echo "Collector flagged criticalFailure=true (runId=$run_id)" >&2
+              exit 1
+            fi
+
+            echo "Validated collector run $run_id: contract=$contract_version, parksProcessed=$parks_processed, supabaseWait=$supabase_wait, tursoWait=$turso_wait, supabaseWeather=$supabase_weather, tursoWeather=$turso_weather, timeoutRate=$timeout_rate"
 
             exit 0
           done
