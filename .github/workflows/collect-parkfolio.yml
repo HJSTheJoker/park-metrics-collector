@@ -49,7 +49,10 @@ jobs:
           # retry up to 3 times in case of transient network issues
           for i in 1 2 3; do
             TMP_BODY="$(mktemp)"
-            HTTP_STATUS="$(curl -sS --connect-timeout 10 --max-time 30 -o "$TMP_BODY" -w "%{http_code}" "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET" || echo "000")"
+            HTTP_STATUS="$(curl -sS --connect-timeout 10 --max-time 30 -o "$TMP_BODY" -w "%{http_code}" "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET" || true)"
+            if ! [[ "$HTTP_STATUS" =~ ^[0-9]{3}$ ]]; then
+              HTTP_STATUS="000"
+            fi
             RESP="$(cat "$TMP_BODY")"
             rm -f "$TMP_BODY"
 
