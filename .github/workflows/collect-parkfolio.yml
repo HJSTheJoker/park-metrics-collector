@@ -79,7 +79,7 @@ jobs:
             fi
 
             success="$(printf '%s' "$RESP" | jq -r '.success // false')"
-            run_id="$(printf '%s' "$RESP" | jq -r '.runId // \"unknown\"')"
+            run_id="$(printf '%s' "$RESP" | jq -r '.runId // "unknown"')"
             contract_version="$(printf '%s' "$RESP" | jq -r '.contractVersion // empty')"
 
             if [ "$success" != "true" ]; then
