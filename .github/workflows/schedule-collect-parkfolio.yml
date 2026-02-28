@@ -1,0 +1,26 @@
+name: Schedule Parkfolio Collector
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch collector workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.request('POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches', {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'collect-parkfolio.yml',
+              ref: context.ref.replace('refs/heads/', '') || 'main',
+            })
+            core.info('Dispatched collect-parkfolio.yml')
