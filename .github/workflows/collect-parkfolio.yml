@@ -100,7 +100,9 @@ jobs:
     timeout-minutes: 12
     strategy:
       fail-fast: false
-      max-parallel: 4
+      # Keep shard fan-out conservative so each function invocation has
+      # enough headroom under platform timeout limits.
+      max-parallel: 2
       matrix:
         shard_index: ${{ fromJson(needs.prepare.outputs.shard_indexes) }}
     steps:
