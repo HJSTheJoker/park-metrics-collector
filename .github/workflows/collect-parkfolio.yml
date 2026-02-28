@@ -125,7 +125,7 @@ jobs:
 
           echo "Running shard ${SHARD_INDEX}/${SHARD_TOTAL} for tick $TICK_BUCKET"
 
-          for attempt in 1 2; do
+          for attempt in 1 2 3; do
             TMP_BODY="$(mktemp)"
             HTTP_STATUS="$(curl -sS --connect-timeout 15 --max-time 90 -o "$TMP_BODY" -w "%{http_code}" "$collector_url" || true)"
             if ! [[ "$HTTP_STATUS" =~ ^[0-9]{3}$ ]]; then
@@ -135,8 +135,8 @@ jobs:
             rm -f "$TMP_BODY"
 
             if [ "$HTTP_STATUS" = "000" ]; then
-              echo "Network error on attempt $attempt/2"
-              if [ "$attempt" -lt 2 ]; then
+              echo "Network error on attempt $attempt/3"
+              if [ "$attempt" -lt 3 ]; then
                 sleep 3
                 continue
               fi
@@ -148,8 +148,8 @@ jobs:
 
             if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
               # Retry only once for transient server-side responses.
-              if [ "$HTTP_STATUS" -ge 500 ] && [ "$attempt" -lt 2 ]; then
-                echo "Server error on attempt $attempt/2, retrying..."
+              if [ "$HTTP_STATUS" -ge 500 ] && [ "$attempt" -lt 3 ]; then
+                echo "Server error on attempt $attempt/3, retrying..."
                 sleep 3
                 continue
               fi
