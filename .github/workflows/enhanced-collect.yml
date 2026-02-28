@@ -1,8 +1,9 @@
 name: Enhanced Data Collection
 
 on:
-  # Disabled: prefer triggering Parkfolio's own cron endpoint to avoid multiple
-  # independent writers and reduce duplicate inserts.
+  # DISABLED: Legacy enhanced collector workflow (schema + secrets drifted).
+  # Use `.github/workflows/collect-parkfolio.yml` as the single source of truth.
+  #
   # schedule:
   #   - cron: '*/5 * * * *'  # Every 5 minutes
   workflow_dispatch:        # Allow manual trigger

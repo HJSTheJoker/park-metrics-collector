@@ -1,7 +1,8 @@
 name: Collect Queue Times
 on:
-  # Disabled: prefer a single scheduled trigger via collect-parkfolio.yml to
-  # avoid duplicate runs against the Parkfolio cron endpoint.
+  # DISABLED: Use `.github/workflows/collect-parkfolio.yml` as the single source of truth.
+  # Keeping multiple schedules active can cause double-ingestion and confusing data.
+  #
   # schedule:
   #   - cron: "*/15 * * * *"  # every 15 minutes (UTC)
   workflow_dispatch:

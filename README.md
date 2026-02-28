@@ -2,6 +2,11 @@
 
 A simple utility for aggregating theme park wait time data from public sources.
 
+This repo also acts as the **canonical scheduler** for Parkfolio ingestion via GitHub Actions:
+- `.github/workflows/collect-parkfolio.yml` calls the Parkfolio Vercel cron endpoint on a schedule.
+- `.github/workflows/monitor-parkfolio.yml` validates coverage, freshness, and API contracts every 15 minutes.
+- `.github/workflows/prune-supabase-hot-window.yml` enforces a 48-hour Supabase hot window every 30 minutes.
+
 ## Purpose
 
 This tool collects publicly available queue time data for research purposes.
@@ -31,39 +36,36 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 ```
 
+### GitHub Actions Secrets (for `collect-parkfolio.yml`)
+
+- `CRON_SECRET`: must match `CRON_SECRET` configured in the Parkfolio Vercel project
+- `BASE_URL` (optional): defaults to `https://parkfolio.vercel.app`
+
+### Additional Secrets (for `monitor-parkfolio.yml` and prune workflow)
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `TURSO_DATABASE_URL` (optional but recommended for direct Turso monitoring)
+- `TURSO_AUTH_TOKEN` (optional but recommended for direct Turso monitoring)
+
+### Repository Variables
+
+- `COLLECTOR_SHARD_TOTAL`
+  - set to `1` during canary rollout
+  - set to `6` for full shard rollout
+
+Secret ownership note:
+- `CRON_SECRET` is rotated from `HJSTheJoker/parkfolio` via `.github/workflows/rotate-cron-secret.yml`.
+- That workflow updates both repos (`parkfolio` and `park-metrics-collector`) to keep scheduler auth in sync.
+- If collector runs start returning `401`, manually trigger `Rotate CRON_SECRET` in `parkfolio`, then run `Parkfolio Collector` once in this repo to verify recovery.
+
 ## Scripts
 
 - `npm run collect` - baseline queue/weather collection
 - `npm run enhanced` - enhanced collection with ThemeParks mapping and confidence scoring
 - `npm run test:apis` - lightweight API reachability test harness
-
-## Canonical Scheduler
-
-This repository is the canonical scheduler for Parkfolio ingestion:
-- `.github/workflows/collect-parkfolio.yml` calls `parkfolio.vercel.app/api/cron/collect-queue-times`.
-
-Required GitHub Actions secrets for this scheduler:
-- `CRON_SECRET` (must match Vercel `CRON_SECRET` in the Parkfolio project)
-- `BASE_URL` (optional override, default is production URL)
-
-## Collector Response Contract
-
-The scheduler enforces a strict response contract before a run is considered healthy:
-- `contractVersion` must be `collect-queue-times/v1`
-- numeric fields must be present:
-  - `supabaseWaitInserted`
-  - `tursoWaitInserted`
-  - `supabaseWeatherInserted`
-  - `tursoWeatherInserted`
-  - `parksTargeted`
-  - `parksProcessed`
-  - `timedOutParks`
-  - `timeoutRate`
-
-Fail-fast policy:
-- if parks were processed, both Supabase and Turso wait insert counters must be greater than zero
-- if weather-eligible parks were processed, both Supabase and Turso weather insert counters must be greater than zero
-- timeout rate must stay below the critical threshold
+- `npm run monitor` - run coverage/freshness/API contract monitor checks
+- `npm run prune:supabase` - prune Supabase hot-window data older than retention
 
 ## License
 

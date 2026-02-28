@@ -2,75 +2,138 @@ name: Parkfolio Collector
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every 5 minutes
+    - cron: '*/5 * * * *' # every 5 minutes
   workflow_dispatch:
+    inputs:
+      shard_total:
+        description: 'Override shard count for this manual run'
+        required: false
+        default: '6'
 
 permissions:
   contents: read
 
 concurrency:
   group: parkfolio-cron
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  run:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    outputs:
+      shard_total: ${{ steps.matrix.outputs.shard_total }}
+      shard_indexes: ${{ steps.matrix.outputs.shard_indexes }}
+      tick_bucket: ${{ steps.tick.outputs.tick_bucket }}
     steps:
+      - name: Resolve tick bucket
+        id: tick
+        run: |
+          set -euo pipefail
+          now_epoch="$(date -u +%s)"
+          bucket_epoch="$(( now_epoch - (now_epoch % 300) ))"
+          tick_bucket="$(date -u -d "@$bucket_epoch" +"%Y-%m-%dT%H:%M:00.000Z")"
+          echo "tick_bucket=$tick_bucket" >> "$GITHUB_OUTPUT"
+          echo "Using tick bucket: $tick_bucket"
+
+      - name: Resolve shard matrix
+        id: matrix
+        env:
+          INPUT_SHARD_TOTAL: ${{ github.event.inputs.shard_total }}
+          DEFAULT_SHARD_TOTAL: ${{ vars.COLLECTOR_SHARD_TOTAL }}
+        run: |
+          set -euo pipefail
+          shard_total="${INPUT_SHARD_TOTAL:-${DEFAULT_SHARD_TOTAL:-6}}"
+
+          if ! [[ "$shard_total" =~ ^[0-9]+$ ]]; then
+            echo "Invalid shard_total: $shard_total" >&2
+            exit 1
+          fi
+
+          if [ "$shard_total" -lt 1 ] || [ "$shard_total" -gt 32 ]; then
+            echo "shard_total must be between 1 and 32 (got $shard_total)" >&2
+            exit 1
+          fi
+
+          shard_indexes="$(node -e 'const n=Number(process.argv[1]); console.log(JSON.stringify(Array.from({length:n}, (_,i)=>i)))' "$shard_total")"
+
+          echo "shard_total=$shard_total" >> "$GITHUB_OUTPUT"
+          echo "shard_indexes=$shard_indexes" >> "$GITHUB_OUTPUT"
+          echo "Shard indexes: $shard_indexes"
+
       - name: Health check (quick)
         env:
           BASE_URL: ${{ secrets.BASE_URL || secrets.VERCEL_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           set -euo pipefail
+
           if [ -z "${CRON_SECRET:-}" ]; then
-            echo "CRON_SECRET is not configured."
+            echo "CRON_SECRET is not configured." >&2
             exit 1
           fi
+
           BASE_URL="${BASE_URL:-https://parkfolio.vercel.app}"
           BASE_URL="${BASE_URL%/}"
-          echo "Health check…"
-          curl -fsSL --connect-timeout 10 --max-time 20 "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET&quick=true" >/dev/null
-          echo "OK"
 
-      - name: Run full collection
+          quick_url="$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET&quick=true"
+          echo "Health check: $quick_url"
+          curl -fsSL --connect-timeout 10 --max-time 20 "$quick_url" >/dev/null
+          echo "Health check OK"
+
+  collect:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: ${{ fromJson(needs.prepare.outputs.shard_indexes) }}
+    steps:
+      - name: Run shard collection
         env:
           BASE_URL: ${{ secrets.BASE_URL || secrets.VERCEL_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SHARD_INDEX: ${{ matrix.shard_index }}
+          SHARD_TOTAL: ${{ needs.prepare.outputs.shard_total }}
+          TICK_BUCKET: ${{ needs.prepare.outputs.tick_bucket }}
         run: |
           set -euo pipefail
+
           if [ -z "${CRON_SECRET:-}" ]; then
-            echo "CRON_SECRET is not configured."
+            echo "CRON_SECRET is not configured." >&2
             exit 1
           fi
+
           BASE_URL="${BASE_URL:-https://parkfolio.vercel.app}"
           BASE_URL="${BASE_URL%/}"
-          echo "Triggering Parkfolio cron collector…"
-          # The full collection can take a while; allow enough time for one run.
-          # Retry once for transient failures.
-          for i in 1 2; do
+
+          collector_url="$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET&shard_index=$SHARD_INDEX&shard_total=$SHARD_TOTAL&tick_bucket=$TICK_BUCKET"
+
+          echo "Running shard ${SHARD_INDEX}/${SHARD_TOTAL} for tick $TICK_BUCKET"
+
+          for attempt in 1 2; do
             TMP_BODY="$(mktemp)"
-            HTTP_STATUS="$(curl -sS --connect-timeout 10 --max-time 180 -o "$TMP_BODY" -w "%{http_code}" "$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET" || true)"
-            if ! [[ "$HTTP_STATUS" =~ ^[0-9]{3}$ ]]; then
-              HTTP_STATUS="000"
-            fi
+            HTTP_STATUS="$(curl -sS --connect-timeout 10 --max-time 45 -o "$TMP_BODY" -w "%{http_code}" "$collector_url" || echo "000")"
             RESP="$(cat "$TMP_BODY")"
             rm -f "$TMP_BODY"
 
             if [ "$HTTP_STATUS" = "000" ]; then
-              echo "Network/timeout error on attempt $i/2"
-              sleep 5
-              continue
+              echo "Network error on attempt $attempt/2"
+              if [ "$attempt" -lt 2 ]; then
+                sleep 3
+                continue
+              fi
+              exit 1
             fi
 
             echo "Collector HTTP status: $HTTP_STATUS"
             echo "$RESP"
 
             if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
-              # Retry only for server-side errors; fail fast for auth/client issues.
-              if [ "$HTTP_STATUS" -ge 500 ] && [ "$i" -lt 2 ]; then
-                echo "Server error on attempt $i/2, retrying…"
-                sleep 5
+              # Retry only once for transient server-side responses.
+              if [ "$HTTP_STATUS" -ge 500 ] && [ "$attempt" -lt 2 ]; then
+                echo "Server error on attempt $attempt/2, retrying..."
+                sleep 3
                 continue
               fi
               echo "Collector returned non-2xx response ($HTTP_STATUS)" >&2
@@ -82,72 +145,67 @@ jobs:
               exit 1
             fi
 
-            success="$(printf '%s' "$RESP" | jq -r '.success // false')"
-            run_id="$(printf '%s' "$RESP" | jq -r '.runId // "unknown"')"
             contract_version="$(printf '%s' "$RESP" | jq -r '.contractVersion // empty')"
+            success="$(printf '%s' "$RESP" | jq -r '.success // false')"
+            critical_failure="$(printf '%s' "$RESP" | jq -r '.criticalFailure // false')"
+            duplicate_skipped="$(printf '%s' "$RESP" | jq -r '.duplicateSkipped // false')"
+            duplicate_of_status="$(printf '%s' "$RESP" | jq -r '.duplicate_of_status // empty')"
+            run_id="$(printf '%s' "$RESP" | jq -r '.runId // "unknown"')"
 
-            if [ "$success" != "true" ]; then
-              echo "Collector reported success=false (runId=$run_id)" >&2
-              exit 1
-            fi
+            response_tick="$(printf '%s' "$RESP" | jq -r '.tick_bucket // empty')"
+            response_shard_index="$(printf '%s' "$RESP" | jq -r '.shard_index // empty')"
+            response_shard_total="$(printf '%s' "$RESP" | jq -r '.shard_total // empty')"
+            coverage_expected="$(printf '%s' "$RESP" | jq -r '.coverage_expected_parks // empty')"
+            coverage_processed="$(printf '%s' "$RESP" | jq -r '.coverage_processed_parks // empty')"
+            timeout_rate="$(printf '%s' "$RESP" | jq -r '.stats.timeoutRate // empty')"
 
             if [ "$contract_version" != "collect-queue-times/v1" ]; then
               echo "Collector contract mismatch (expected collect-queue-times/v1, got ${contract_version:-missing})" >&2
               exit 1
             fi
 
-            required_numeric_fields=(
-              "supabaseWaitInserted:.stats.supabaseWaitInserted"
-              "supabaseWeatherInserted:.stats.supabaseWeatherInserted"
-              "tursoWaitInserted:.stats.tursoWaitInserted"
-              "tursoWeatherInserted:.stats.tursoWeatherInserted"
-              "parksTargeted:.stats.parksTargeted"
-              "parksProcessed:.stats.parksProcessed"
-              "weatherEligibleParksProcessed:.stats.weatherEligibleParksProcessed"
-              "timedOutParks:.stats.timedOutParks"
-              "timeoutRate:.stats.timeoutRate"
-            )
-
-            for pair in "${required_numeric_fields[@]}"; do
-              field="${pair%%:*}"
-              jq_path="${pair#*:}"
-              value="$(printf '%s' "$RESP" | jq -r "${jq_path} // empty")"
-              if ! [[ "$value" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
-                echo "Collector response missing numeric stats field: $field" >&2
+            for field_value in \
+              "tick_bucket:$response_tick" \
+              "shard_index:$response_shard_index" \
+              "shard_total:$response_shard_total" \
+              "coverage_expected_parks:$coverage_expected" \
+              "coverage_processed_parks:$coverage_processed" \
+              "timeoutRate:$timeout_rate"
+            do
+              field="${field_value%%:*}"
+              value="${field_value#*:}"
+              if [ -z "$value" ] || [ "$value" = "null" ]; then
+                echo "Collector response missing required field: $field" >&2
                 exit 1
               fi
             done
 
-            supabase_wait="$(printf '%s' "$RESP" | jq -r '.stats.supabaseWaitInserted')"
-            supabase_weather="$(printf '%s' "$RESP" | jq -r '.stats.supabaseWeatherInserted')"
-            turso_wait="$(printf '%s' "$RESP" | jq -r '.stats.tursoWaitInserted')"
-            turso_weather="$(printf '%s' "$RESP" | jq -r '.stats.tursoWeatherInserted')"
-            parks_processed="$(printf '%s' "$RESP" | jq -r '.stats.parksProcessed')"
-            weather_eligible_processed="$(printf '%s' "$RESP" | jq -r '.stats.weatherEligibleParksProcessed')"
-            timed_out_parks="$(printf '%s' "$RESP" | jq -r '.stats.timedOutParks')"
-            parks_targeted="$(printf '%s' "$RESP" | jq -r '.stats.parksTargeted')"
-            timeout_rate="$(printf '%s' "$RESP" | jq -r '.stats.timeoutRate')"
-            critical_failure="$(printf '%s' "$RESP" | jq -r '.criticalFailure // false')"
-
-            if [ "$parks_processed" -gt 0 ] && [ "$supabase_wait" -eq 0 ]; then
-              echo "Critical: Supabase wait insert counter is zero after processing parks ($parks_processed)" >&2
-              exit 1
-            fi
-            if [ "$parks_processed" -gt 0 ] && [ "$turso_wait" -eq 0 ]; then
-              echo "Critical: Turso wait insert counter is zero after processing parks ($parks_processed)" >&2
-              exit 1
-            fi
-            if [ "$weather_eligible_processed" -gt 0 ] && [ "$supabase_weather" -eq 0 ]; then
-              echo "Critical: Supabase weather insert counter is zero after processing weather-eligible parks ($weather_eligible_processed)" >&2
-              exit 1
-            fi
-            if [ "$weather_eligible_processed" -gt 0 ] && [ "$turso_weather" -eq 0 ]; then
-              echo "Critical: Turso weather insert counter is zero after processing weather-eligible parks ($weather_eligible_processed)" >&2
+            if [ "$response_tick" != "$TICK_BUCKET" ]; then
+              echo "Tick bucket mismatch (expected $TICK_BUCKET, got $response_tick)" >&2
               exit 1
             fi
 
-            if awk "BEGIN {exit !($timeout_rate >= 0.2)}"; then
-              echo "Critical: timeout threshold breached (${timed_out_parks}/${parks_targeted} parks, rate=${timeout_rate})" >&2
+            if [ "$response_shard_index" != "$SHARD_INDEX" ]; then
+              echo "Shard index mismatch (expected $SHARD_INDEX, got $response_shard_index)" >&2
+              exit 1
+            fi
+
+            if [ "$response_shard_total" != "$SHARD_TOTAL" ]; then
+              echo "Shard total mismatch (expected $SHARD_TOTAL, got $response_shard_total)" >&2
+              exit 1
+            fi
+
+            if [ "$duplicate_skipped" = "true" ]; then
+              if [ "$duplicate_of_status" != "completed" ]; then
+                echo "Duplicate skip was returned for non-completed status (${duplicate_of_status:-missing}); treating as failure." >&2
+                exit 1
+              fi
+              echo "Shard run already processed for tick $TICK_BUCKET (runId=$run_id); skipping as idempotent duplicate."
+              exit 0
+            fi
+
+            if [ "$success" != "true" ]; then
+              echo "Collector reported success=false (runId=$run_id)" >&2
               exit 1
             fi
 
@@ -156,9 +214,19 @@ jobs:
               exit 1
             fi
 
-            echo "Validated collector run $run_id: contract=$contract_version, parksProcessed=$parks_processed, supabaseWait=$supabase_wait, tursoWait=$turso_wait, supabaseWeather=$supabase_weather, tursoWeather=$turso_weather, timeoutRate=$timeout_rate"
+            if awk "BEGIN {exit !($timeout_rate >= 0.2)}"; then
+              echo "Critical: timeout threshold breached for shard ${SHARD_INDEX}/${SHARD_TOTAL} (timeoutRate=$timeout_rate)" >&2
+              exit 1
+            fi
 
+            if [ "$coverage_processed" -lt "$coverage_expected" ]; then
+              echo "Shard coverage incomplete for ${SHARD_INDEX}/${SHARD_TOTAL}: processed=$coverage_processed expected=$coverage_expected" >&2
+              exit 1
+            fi
+
+            echo "Validated shard ${SHARD_INDEX}/${SHARD_TOTAL} runId=$run_id tick=$response_tick coverage=${coverage_processed}/${coverage_expected} timeoutRate=$timeout_rate"
             exit 0
           done
-          echo "Failed to trigger Parkfolio cron after retries" >&2
+
+          echo "Failed to run shard ${SHARD_INDEX}/${SHARD_TOTAL} after retries" >&2
           exit 1

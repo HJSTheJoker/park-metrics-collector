@@ -1,0 +1,48 @@
+name: Prune Supabase Hot Window
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prune-supabase-hot-window
+  cancel-in-progress: true
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prune Supabase hot window
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_RETENTION_HOURS: '48'
+          PRUNE_BATCH_SIZE: '5000'
+          PRUNE_MAX_BATCHES: '250'
+          REPORT_FILE: supabase-prune-report.json
+        run: npx tsx scripts/prune-supabase-hot-window.ts
+
+      - name: Upload prune report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supabase-prune-report
+          path: supabase-prune-report.json
+          if-no-files-found: ignore
