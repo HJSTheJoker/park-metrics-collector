@@ -68,7 +68,8 @@ async function pruneTableInBatches(
   table: TableName,
   cutoffIso: string,
   batchSize: number,
-  maxBatches: number
+  maxBatches: number,
+  deleteChunkSize: number
 ): Promise<TableResult> {
   let deletedRows = 0
   let batches = 0
@@ -94,14 +95,17 @@ async function pruneTableInBatches(
       break
     }
 
-    const { count, error: deleteError } = await supabase
-      .from(table)
-      .delete({ count: 'exact' })
-      .in('id', ids)
+    for (let idx = 0; idx < ids.length; idx += deleteChunkSize) {
+      const chunk = ids.slice(idx, idx + deleteChunkSize)
+      const { count, error: deleteError } = await supabase
+        .from(table)
+        .delete({ count: 'exact' })
+        .in('id', chunk)
 
-    if (deleteError) throw new Error(`delete batch failed for ${table}: ${deleteError.message}`)
+      if (deleteError) throw new Error(`delete batch failed for ${table}: ${deleteError.message}`)
+      deletedRows += Number(count ?? chunk.length)
+    }
 
-    deletedRows += Number(count ?? ids.length)
     batches += 1
 
     if (ids.length < batchSize) {
@@ -151,6 +155,7 @@ async function main() {
   const retentionHours = envInt('SUPABASE_RETENTION_HOURS', 48, 1, 24 * 30)
   const batchSize = envInt('PRUNE_BATCH_SIZE', 5000, 100, 10000)
   const maxBatches = envInt('PRUNE_MAX_BATCHES', 250, 1, 2000)
+  const deleteChunkSize = envInt('PRUNE_DELETE_CHUNK_SIZE', 100, 25, 1000)
   const reportFile = env('REPORT_FILE') ?? 'supabase-prune-report.json'
 
   const cutoffIso = new Date(Date.now() - retentionHours * 60 * 60 * 1000).toISOString()
@@ -167,6 +172,7 @@ async function main() {
       cutoffIso,
       batchSize,
       maxBatches,
+      deleteChunkSize,
     },
     null,
     startedAtMs
@@ -177,7 +183,14 @@ async function main() {
     const tableResults: TableResult[] = []
 
     for (const table of tables) {
-      const result = await pruneTableInBatches(supabase, table, cutoffIso, batchSize, maxBatches)
+      const result = await pruneTableInBatches(
+        supabase,
+        table,
+        cutoffIso,
+        batchSize,
+        maxBatches,
+        deleteChunkSize
+      )
       tableResults.push(result)
     }
 
@@ -193,6 +206,7 @@ async function main() {
       cutoffIso,
       batchSize,
       maxBatches,
+      deleteChunkSize,
       totalDeleted,
       tableResults,
       hasRemainingOlder,
@@ -228,6 +242,7 @@ async function main() {
         cutoffIso,
         batchSize,
         maxBatches,
+        deleteChunkSize,
       },
       errorMessage,
       startedAtMs

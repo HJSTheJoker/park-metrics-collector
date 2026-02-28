@@ -8,7 +8,7 @@ on:
       shard_total:
         description: 'Override shard count for this manual run'
         required: false
-        default: '6'
+        default: ''
 
 permissions:
   contents: read
