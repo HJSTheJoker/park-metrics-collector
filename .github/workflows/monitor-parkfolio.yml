@@ -1,0 +1,129 @@
+name: Parkfolio Monitoring
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: parkfolio-monitor
+  cancel-in-progress: true
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run collector monitoring checks
+        id: monitor
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          BASE_URL: ${{ secrets.BASE_URL || secrets.VERCEL_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SUPABASE_RETENTION_HOURS: '48'
+          EXPECTED_SHARD_TOTAL: ${{ vars.COLLECTOR_SHARD_TOTAL }}
+          MONITOR_LOOKBACK_MINUTES: '30'
+          EXPECTED_TICK_MINUTES: '5'
+          MAX_P95_FRESHNESS_MINUTES: '15'
+          REPORT_FILE: collector-monitor-report.md
+        run: npx tsx scripts/verify-collector-slo.ts
+
+      - name: Upload monitor report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: collector-monitor-report
+          path: collector-monitor-report.md
+          if-no-files-found: ignore
+
+      - name: Open or update alert issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs')
+            const title = '[Collector Alert] Parkfolio monitoring failures'
+            const reportPath = 'collector-monitor-report.md'
+            const report = fs.existsSync(reportPath)
+              ? fs.readFileSync(reportPath, 'utf8')
+              : 'Monitoring run failed before report generation.'
+
+            const { owner, repo } = context.repo
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            })
+
+            const existing = issues.find((issue) => issue.title === title)
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`
+            const body = `Monitoring run failed at ${new Date().toISOString()}\n\nRun: ${runUrl}\n\n${report}`
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: existing.number,
+                body,
+              })
+            } else {
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                body,
+              })
+            }
+
+      - name: Resolve open alert issue on green run
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '[Collector Alert] Parkfolio monitoring failures'
+            const { owner, repo } = context.repo
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            })
+
+            const existing = issues.find((issue) => issue.title === title)
+            if (!existing) {
+              return
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: existing.number,
+              body: `Monitoring recovered on ${new Date().toISOString()} (run https://github.com/${owner}/${repo}/actions/runs/${context.runId}).`,
+            })
+
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number: existing.number,
+              state: 'closed',
+            })

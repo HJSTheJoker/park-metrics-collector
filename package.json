@@ -4,7 +4,9 @@
   "description": "Data aggregation utility",
   "main": "collector.ts",
   "scripts": {
-    "collect": "tsx collector.ts"
+    "collect": "tsx collector.ts",
+    "monitor": "tsx scripts/verify-collector-slo.ts",
+    "prune:supabase": "tsx scripts/prune-supabase-hot-window.ts"
   },
   "keywords": ["data", "metrics", "collection"],
   "author": "",
