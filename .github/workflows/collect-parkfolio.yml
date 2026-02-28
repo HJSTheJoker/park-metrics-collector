@@ -77,8 +77,18 @@ jobs:
 
           quick_url="$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET&quick=true"
           echo "Health check: $quick_url"
-          curl -fsSL --connect-timeout 10 --max-time 20 "$quick_url" >/dev/null
-          echo "Health check OK"
+          for attempt in 1 2 3; do
+            if curl -fsSL --connect-timeout 10 --max-time 20 "$quick_url" >/dev/null; then
+              echo "Health check OK"
+              break
+            fi
+
+            echo "Health check failed on attempt $attempt/3"
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 3
+          done
 
   collect:
     needs: prepare
