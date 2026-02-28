@@ -127,7 +127,10 @@ jobs:
 
           for attempt in 1 2; do
             TMP_BODY="$(mktemp)"
-            HTTP_STATUS="$(curl -sS --connect-timeout 10 --max-time 45 -o "$TMP_BODY" -w "%{http_code}" "$collector_url" || echo "000")"
+            HTTP_STATUS="$(curl -sS --connect-timeout 15 --max-time 90 -o "$TMP_BODY" -w "%{http_code}" "$collector_url" || true)"
+            if ! [[ "$HTTP_STATUS" =~ ^[0-9]{3}$ ]]; then
+              HTTP_STATUS="000"
+            fi
             RESP="$(cat "$TMP_BODY")"
             rm -f "$TMP_BODY"
 
