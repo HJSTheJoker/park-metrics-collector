@@ -108,9 +108,8 @@ async function pruneTableInBatches(
 
     batches += 1
 
-    if (ids.length < batchSize) {
-      break
-    }
+    // Supabase may enforce a practical max rows-per-response lower than batchSize.
+    // Keep looping until no rows remain so prune can fully drain old data.
   }
 
   const remainingOlderRows = await countOlderRows(supabase, table, cutoffIso)
