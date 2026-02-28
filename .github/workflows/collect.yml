@@ -12,21 +12,28 @@ jobs:
   collect:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      
+
       - name: Install dependencies
         run: |
           npm install
-      
+
       - name: Run collection
         env:
+          # Supabase (reference data + dual-write target)
           DB_CONNECTION: ${{ secrets.DB_CONNECTION }}
           DB_AUTH: ${{ secrets.DB_AUTH }}
+          SUPABASE_URL: ${{ secrets.DB_CONNECTION }}
+          SUPABASE_KEY: ${{ secrets.DB_AUTH }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # TursoDB (historical data storage)
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
         run: |
           npx tsx collector.ts
