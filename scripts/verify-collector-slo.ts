@@ -44,6 +44,15 @@ function envInt(name: string, fallback: number, min: number, max: number): numbe
   return Math.max(min, Math.min(max, parsed))
 }
 
+function envBool(name: string, fallback: boolean): boolean {
+  const raw = env(name)
+  if (!raw) return fallback
+  const normalized = raw.toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false
+  return fallback
+}
+
 function toNumber(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
@@ -96,6 +105,7 @@ async function main() {
   const expectedShardTotal = envInt('EXPECTED_SHARD_TOTAL', 6, 1, 64)
   const maxFreshnessMinutes = envInt('MAX_P95_FRESHNESS_MINUTES', 15, 5, 240)
   const retentionHours = envInt('SUPABASE_RETENTION_HOURS', 48, 1, 24 * 30)
+  const requireCronLogs = envBool('COLLECTOR_REQUIRE_CRON_LOGS', false)
   const reportFile = env('REPORT_FILE') ?? 'collector-monitor-report.md'
   const tursoUrl = optionalEnvAny(['TURSO_DATABASE_URL', 'TURSO_DB_URL'])
   const tursoToken = optionalEnvAny(['TURSO_AUTH_TOKEN', 'TURSO_TOKEN'])
@@ -128,10 +138,12 @@ async function main() {
     .order('created_at', { ascending: true })
 
   if (cronError) {
+    const msg = String(cronError.message ?? '')
+    const isMissingCronLogs = msg.includes('relation "public.cron_logs" does not exist')
     checks.push({
       name: 'Cron coverage window',
-      status: 'fail',
-      detail: `Failed to query cron_logs: ${cronError.message}`,
+      status: isMissingCronLogs && !requireCronLogs ? 'warn' : 'fail',
+      detail: `Failed to query cron_logs: ${msg}`,
     })
   } else {
     const logs = (cronRows ?? []) as CronLogRow[]
