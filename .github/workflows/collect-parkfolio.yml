@@ -1,8 +1,6 @@
 name: Parkfolio Collector
 
 on:
-  schedule:
-    - cron: '*/5 * * * *' # every 5 minutes
   workflow_dispatch:
     inputs:
       shard_total:
