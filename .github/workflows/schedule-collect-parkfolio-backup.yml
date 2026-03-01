@@ -1,0 +1,86 @@
+name: Schedule Parkfolio Collector (Backup)
+
+on:
+  schedule:
+    - cron: '4-59/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch-if-stale:
+    if: ${{ vars.COLLECTOR_PAUSED != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch collector only when stale
+        uses: actions/github-script@v7
+        env:
+          STALE_THRESHOLD_MINUTES: ${{ vars.COLLECTOR_STALE_THRESHOLD_MINUTES || '7' }}
+        with:
+          script: |
+            const workflowId = 'collect-parkfolio.yml'
+            const staleThresholdMinutes = Number(process.env.STALE_THRESHOLD_MINUTES || '7')
+            const now = Date.now()
+
+            const tickMs = 5 * 60 * 1000
+            const tickBucket = new Date(Math.floor(now / tickMs) * tickMs).toISOString()
+
+            const runsResp = await github.request('GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs', {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: workflowId,
+              per_page: 20,
+            })
+
+            const runs = runsResp.data.workflow_runs ?? []
+            const latest = runs[0]
+            if (!latest) {
+              core.info('No existing collector runs found; dispatching backup run.')
+            } else {
+              const latestStatus = latest.status
+              const latestStartedAtRaw = latest.run_started_at || latest.created_at
+              core.info(
+                `Latest collect run #${latest.run_number} status=${latestStatus} conclusion=${latest.conclusion ?? 'n/a'} started_at=${latestStartedAtRaw}`
+              )
+
+              if (latestStatus !== 'completed') {
+                core.info('Latest collector run is still queued/in-progress; skipping backup dispatch.')
+                return
+              }
+            }
+
+            const latestSuccessful = runs.find((run) => run.status === 'completed' && run.conclusion === 'success')
+            if (latestSuccessful) {
+              const successStartedAtRaw = latestSuccessful.run_started_at || latestSuccessful.created_at
+              const successStartedAt = Date.parse(successStartedAtRaw)
+              const successAgeMinutes = Number.isFinite(successStartedAt)
+                ? (now - successStartedAt) / (60 * 1000)
+                : Number.POSITIVE_INFINITY
+
+              core.info(
+                `Latest successful run #${latestSuccessful.run_number} started_at=${successStartedAtRaw} age_minutes=${successAgeMinutes.toFixed(2)}`
+              )
+
+              if (successAgeMinutes <= staleThresholdMinutes) {
+                core.info(
+                  `Collector is not stale (${successAgeMinutes.toFixed(2)}m <= ${staleThresholdMinutes}m); skipping backup dispatch.`
+                )
+                return
+              }
+            } else {
+              core.info('No successful collector runs found in recent history; backup dispatch will run.')
+            }
+
+            await github.request('POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches', {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: workflowId,
+              ref: context.ref.replace('refs/heads/', '') || 'main',
+              inputs: {
+                tick_bucket: tickBucket,
+              },
+            })
+
+            core.info(`Dispatched backup collector run for tick ${tickBucket}`)

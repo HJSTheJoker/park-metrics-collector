@@ -2,7 +2,7 @@ name: Schedule Parkfolio Collector
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '2-59/5 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -11,10 +11,23 @@ permissions:
 
 jobs:
   dispatch:
+    if: ${{ vars.COLLECTOR_PAUSED != 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve deterministic tick bucket
+        id: tick
+        run: |
+          set -euo pipefail
+          now_epoch="$(date -u +%s)"
+          bucket_epoch="$(( now_epoch - (now_epoch % 300) ))"
+          tick_bucket="$(date -u -d "@$bucket_epoch" +"%Y-%m-%dT%H:%M:00.000Z")"
+          echo "tick_bucket=$tick_bucket" >> "$GITHUB_OUTPUT"
+          echo "Dispatching tick bucket: $tick_bucket"
+
       - name: Dispatch collector workflow
         uses: actions/github-script@v7
+        env:
+          TICK_BUCKET: ${{ steps.tick.outputs.tick_bucket }}
         with:
           script: |
             await github.request('POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches', {
@@ -22,5 +35,8 @@ jobs:
               repo: context.repo.repo,
               workflow_id: 'collect-parkfolio.yml',
               ref: context.ref.replace('refs/heads/', '') || 'main',
+              inputs: {
+                tick_bucket: process.env.TICK_BUCKET,
+              },
             })
-            core.info('Dispatched collect-parkfolio.yml')
+            core.info(`Dispatched collect-parkfolio.yml for tick ${process.env.TICK_BUCKET}`)
