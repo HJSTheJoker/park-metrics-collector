@@ -4,6 +4,8 @@ A simple utility for aggregating theme park wait time data from public sources.
 
 This repo also acts as the **canonical scheduler** for Parkfolio ingestion via GitHub Actions:
 - `.github/workflows/collect-parkfolio.yml` calls the Parkfolio Vercel cron endpoint on a schedule.
+- `.github/workflows/schedule-collect-parkfolio.yml` is the primary 5-minute dispatcher.
+- `.github/workflows/schedule-collect-parkfolio-backup.yml` dispatches only when the primary path is stale.
 - `.github/workflows/monitor-parkfolio.yml` validates coverage, freshness, and API contracts every 15 minutes.
 - `.github/workflows/prune-supabase-hot-window.yml` enforces a 48-hour Supabase hot window every 30 minutes.
 
@@ -53,6 +55,11 @@ SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 - `COLLECTOR_SHARD_TOTAL`
   - set to `1` during canary rollout
   - set to `6` for full shard rollout
+- `COLLECTOR_PAUSED`
+  - set to `true` to pause automated primary/backup scheduling
+  - set to `false` (or unset) for normal operation
+- `COLLECTOR_STALE_THRESHOLD_MINUTES`
+  - backup scheduler stale threshold before dispatch (default `7`)
 
 Secret ownership note:
 - `CRON_SECRET` is rotated from `HJSTheJoker/parkfolio` via `.github/workflows/rotate-cron-secret.yml`.
@@ -66,6 +73,11 @@ Secret ownership note:
 - `npm run test:apis` - lightweight API reachability test harness
 - `npm run monitor` - run coverage/freshness/API contract monitor checks
 - `npm run prune:supabase` - prune Supabase hot-window data older than retention
+
+## Future Migration Notes
+
+For future provider migration planning (for example, Turso to ClickHouse), use:
+- [Future Database Migration Runbook](https://github.com/HJSTheJoker/parkfolio/blob/main/docs/FUTURE_DATABASE_MIGRATION_RUNBOOK.md)
 
 ## License
 

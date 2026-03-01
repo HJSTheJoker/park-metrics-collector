@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: read
   issues: write
 
@@ -54,6 +55,46 @@ jobs:
           name: collector-monitor-report
           path: collector-monitor-report.md
           if-no-files-found: ignore
+
+      - name: Trigger catch-up run on stale freshness failure
+        if: failure() && vars.COLLECTOR_PAUSED != 'true'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          EXPECTED_SHARD_TOTAL: ${{ vars.COLLECTOR_SHARD_TOTAL }}
+          REPORT_FILE: collector-monitor-report.md
+        with:
+          script: |
+            const fs = require('fs')
+            const reportPath = process.env.REPORT_FILE || 'collector-monitor-report.md'
+            if (!fs.existsSync(reportPath)) {
+              core.info('No monitor report found; skipping catch-up dispatch.')
+              return
+            }
+
+            const report = fs.readFileSync(reportPath, 'utf8')
+            const hasFreshnessFailure = report.includes('[FAIL] Per-park freshness percentiles')
+            if (!hasFreshnessFailure) {
+              core.info('No freshness failure detected; catch-up dispatch not required.')
+              return
+            }
+
+            const shardTotal = String(process.env.EXPECTED_SHARD_TOTAL || '6')
+            const tickMs = 5 * 60 * 1000
+            const tickBucket = new Date(Math.floor(Date.now() / tickMs) * tickMs).toISOString()
+
+            await github.request('POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches', {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'collect-parkfolio.yml',
+              ref: context.ref.replace('refs/heads/', '') || 'main',
+              inputs: {
+                shard_total: shardTotal,
+                tick_bucket: tickBucket,
+              },
+            })
+
+            core.info(`Dispatched catch-up collector run (tick=${tickBucket}, shard_total=${shardTotal}).`)
 
       - name: Open or update alert issue
         if: failure()

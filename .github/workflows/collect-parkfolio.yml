@@ -7,6 +7,10 @@ on:
         description: 'Override shard count for this manual run'
         required: false
         default: ''
+      tick_bucket:
+        description: 'Optional ISO time; rounded down to 5-minute bucket'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -25,11 +29,19 @@ jobs:
     steps:
       - name: Resolve tick bucket
         id: tick
+        env:
+          INPUT_TICK_BUCKET: ${{ github.event.inputs.tick_bucket }}
         run: |
           set -euo pipefail
-          now_epoch="$(date -u +%s)"
-          bucket_epoch="$(( now_epoch - (now_epoch % 300) ))"
-          tick_bucket="$(date -u -d "@$bucket_epoch" +"%Y-%m-%dT%H:%M:00.000Z")"
+          tick_bucket="$(
+            node -e '
+              const raw = (process.env.INPUT_TICK_BUCKET || "").trim()
+              const parsed = raw ? Date.parse(raw) : Date.now()
+              const base = Number.isFinite(parsed) ? parsed : Date.now()
+              const bucketMs = 5 * 60 * 1000
+              process.stdout.write(new Date(Math.floor(base / bucketMs) * bucketMs).toISOString())
+            '
+          )"
           echo "tick_bucket=$tick_bucket" >> "$GITHUB_OUTPUT"
           echo "Using tick bucket: $tick_bucket"
 
