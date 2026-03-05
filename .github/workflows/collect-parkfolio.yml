@@ -11,6 +11,10 @@ on:
         description: 'Optional ISO time; rounded down to 5-minute bucket'
         required: false
         default: ''
+      execution_mode:
+        description: 'Collector execution mode: direct or vercel-proxy'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -26,6 +30,8 @@ jobs:
       shard_total: ${{ steps.matrix.outputs.shard_total }}
       shard_indexes: ${{ steps.matrix.outputs.shard_indexes }}
       tick_bucket: ${{ steps.tick.outputs.tick_bucket }}
+      execution_mode: ${{ steps.execution.outputs.execution_mode }}
+      strict_dual_write: ${{ steps.execution.outputs.strict_dual_write }}
     steps:
       - name: Resolve tick bucket
         id: tick
@@ -70,26 +76,62 @@ jobs:
           echo "shard_indexes=$shard_indexes" >> "$GITHUB_OUTPUT"
           echo "Shard indexes: $shard_indexes"
 
-      - name: Health check (quick)
+      - name: Resolve execution mode
+        id: execution
         env:
-          BASE_URL: ${{ secrets.BASE_URL || secrets.VERCEL_URL }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          INPUT_EXECUTION_MODE: ${{ github.event.inputs.execution_mode }}
+          DEFAULT_EXECUTION_MODE: ${{ vars.COLLECTOR_EXECUTION_MODE }}
+          STRICT_DUAL_WRITE_VAR: ${{ vars.COLLECTOR_STRICT_DUAL_WRITE }}
         run: |
           set -euo pipefail
 
-          if [ -z "${CRON_SECRET:-}" ]; then
-            echo "CRON_SECRET is not configured." >&2
+          raw_mode="${INPUT_EXECUTION_MODE:-${DEFAULT_EXECUTION_MODE:-direct}}"
+          execution_mode="$(printf '%s' "$raw_mode" | tr '[:upper:]' '[:lower:]')"
+
+          case "$execution_mode" in
+            direct|vercel-proxy) ;;
+            *)
+              echo "Unsupported execution mode: $execution_mode" >&2
+              exit 1
+              ;;
+          esac
+
+          strict_dual_write="${STRICT_DUAL_WRITE_VAR:-true}"
+          strict_dual_write="$(printf '%s' "$strict_dual_write" | tr '[:upper:]' '[:lower:]')"
+          if [ "$strict_dual_write" != "true" ] && [ "$strict_dual_write" != "false" ]; then
+            strict_dual_write="true"
+          fi
+
+          echo "execution_mode=$execution_mode" >> "$GITHUB_OUTPUT"
+          echo "strict_dual_write=$strict_dual_write" >> "$GITHUB_OUTPUT"
+          echo "Execution mode: $execution_mode"
+          echo "Strict dual write: $strict_dual_write"
+
+      - name: Health check (quick)
+        if: steps.execution.outputs.execution_mode == 'vercel-proxy'
+        env:
+          BASE_URL: ${{ secrets.BASE_URL || secrets.VERCEL_URL }}
+          CRON_SECRET_PRIMARY: ${{ secrets.CRON_SECRET }}
+          CRON_SECRET_SECONDARY: ${{ secrets.CRON_SECRET_SECONDARY }}
+        run: |
+          set -euo pipefail
+
+          AUTH_SECRET="${CRON_SECRET_PRIMARY:-${CRON_SECRET_SECONDARY:-}}"
+          if [ -z "${AUTH_SECRET:-}" ]; then
+            echo "CRON_SECRET/CRON_SECRET_SECONDARY is not configured." >&2
             exit 1
           fi
 
           BASE_URL="${BASE_URL:-https://parkfolio.vercel.app}"
           BASE_URL="${BASE_URL%/}"
 
-          quick_url="$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET&quick=true"
+          quick_url="$BASE_URL/api/cron/collect-queue-times?quick=true"
           echo "Health check: $quick_url"
           healthy="false"
           for attempt in 1 2 3; do
-            if curl -fsSL --connect-timeout 10 --max-time 20 "$quick_url" >/dev/null; then
+            if curl -fsSL --connect-timeout 10 --max-time 20 \
+              -H "Authorization: Bearer ${AUTH_SECRET}" \
+              "$quick_url" >/dev/null; then
               echo "Health check OK"
               healthy="true"
               break
@@ -107,40 +149,87 @@ jobs:
   collect:
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     strategy:
       fail-fast: false
-      # Keep shard fan-out conservative so each function invocation has
-      # enough headroom under platform timeout limits.
       max-parallel: 2
       matrix:
         shard_index: ${{ fromJson(needs.prepare.outputs.shard_indexes) }}
     steps:
-      - name: Run shard collection
+      - name: Checkout collector code
+        if: needs.prepare.outputs.execution_mode == 'direct'
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: needs.prepare.outputs.execution_mode == 'direct'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: needs.prepare.outputs.execution_mode == 'direct'
+        run: npm ci
+
+      - name: Run shard collection (direct)
+        if: needs.prepare.outputs.execution_mode == 'direct'
+        env:
+          DB_CONNECTION: ${{ secrets.DB_CONNECTION }}
+          DB_AUTH: ${{ secrets.DB_AUTH }}
+          SUPABASE_URL: ${{ secrets.DB_CONNECTION }}
+          SUPABASE_KEY: ${{ secrets.DB_AUTH }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SHARD_INDEX: ${{ matrix.shard_index }}
+          SHARD_TOTAL: ${{ needs.prepare.outputs.shard_total }}
+          TICK_BUCKET: ${{ needs.prepare.outputs.tick_bucket }}
+          COLLECTOR_STRICT_DUAL_WRITE: ${{ needs.prepare.outputs.strict_dual_write }}
+          COLLECTOR_SUMMARY_FILE: collector-summary.json
+        run: |
+          set -euo pipefail
+          npx tsx collector.ts
+          jq -e '.contractVersion == "collector-direct/v1"' collector-summary.json >/dev/null
+          jq . collector-summary.json
+
+      - name: Upload direct shard summary
+        if: always() && needs.prepare.outputs.execution_mode == 'direct'
+        uses: actions/upload-artifact@v4
+        with:
+          name: collector-direct-summary-shard-${{ matrix.shard_index }}
+          path: collector-summary.json
+          if-no-files-found: ignore
+
+      - name: Run shard collection (vercel-proxy)
+        if: needs.prepare.outputs.execution_mode == 'vercel-proxy'
         env:
           BASE_URL: ${{ secrets.BASE_URL || secrets.VERCEL_URL }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_SECRET_PRIMARY: ${{ secrets.CRON_SECRET }}
+          CRON_SECRET_SECONDARY: ${{ secrets.CRON_SECRET_SECONDARY }}
           SHARD_INDEX: ${{ matrix.shard_index }}
           SHARD_TOTAL: ${{ needs.prepare.outputs.shard_total }}
           TICK_BUCKET: ${{ needs.prepare.outputs.tick_bucket }}
         run: |
           set -euo pipefail
 
-          if [ -z "${CRON_SECRET:-}" ]; then
-            echo "CRON_SECRET is not configured." >&2
+          AUTH_SECRET="${CRON_SECRET_PRIMARY:-${CRON_SECRET_SECONDARY:-}}"
+          if [ -z "${AUTH_SECRET:-}" ]; then
+            echo "CRON_SECRET/CRON_SECRET_SECONDARY is not configured." >&2
             exit 1
           fi
 
           BASE_URL="${BASE_URL:-https://parkfolio.vercel.app}"
           BASE_URL="${BASE_URL%/}"
 
-          collector_url="$BASE_URL/api/cron/collect-queue-times?secret=$CRON_SECRET&shard_index=$SHARD_INDEX&shard_total=$SHARD_TOTAL&tick_bucket=$TICK_BUCKET"
+          collector_url="$BASE_URL/api/cron/collect-queue-times?shard_index=$SHARD_INDEX&shard_total=$SHARD_TOTAL&tick_bucket=$TICK_BUCKET"
 
           echo "Running shard ${SHARD_INDEX}/${SHARD_TOTAL} for tick $TICK_BUCKET"
 
           for attempt in 1 2 3; do
             TMP_BODY="$(mktemp)"
-            HTTP_STATUS="$(curl -sS --connect-timeout 15 --max-time 90 -o "$TMP_BODY" -w "%{http_code}" "$collector_url" || true)"
+            HTTP_STATUS="$(curl -sS --connect-timeout 15 --max-time 90 \
+              -H "Authorization: Bearer ${AUTH_SECRET}" \
+              -o "$TMP_BODY" -w "%{http_code}" "$collector_url" || true)"
             if ! [[ "$HTTP_STATUS" =~ ^[0-9]{3}$ ]]; then
               HTTP_STATUS="000"
             fi
@@ -160,7 +249,6 @@ jobs:
             echo "$RESP"
 
             if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
-              # Retry only once for transient server-side responses.
               if [ "$HTTP_STATUS" -ge 500 ] && [ "$attempt" -lt 3 ]; then
                 echo "Server error on attempt $attempt/3, retrying..."
                 sleep 3
@@ -184,35 +272,12 @@ jobs:
             duplicate_skipped="$(printf '%s' "$RESP" | jq -r '.duplicateSkipped // false')"
             duplicate_of_status="$(printf '%s' "$RESP" | jq -r '.duplicate_of_status // empty')"
             run_id="$(printf '%s' "$RESP" | jq -r '.runId // "unknown"')"
-            noncritical_insert_warnings_only="$(printf '%s' "$RESP" | jq -r '
-              (.stats.errors // []) as $errs
-              | if ($errs | length) == 0 then
-                  "false"
-                else
-                  ($errs | all(
-                    . == "Supabase wait-time insert counter is zero after processing parks"
-                    or . == "Turso wait-time insert counter is zero after processing parks"
-                    or . == "Supabase weather insert counter is zero after processing weather-eligible parks"
-                    or . == "Turso weather insert counter is zero after processing weather-eligible parks"
-                  )) | tostring
-                end
-            ')"
-
             response_tick="$(printf '%s' "$RESP" | jq -r '.tick_bucket // empty')"
             response_shard_index="$(printf '%s' "$RESP" | jq -r '.shard_index // empty')"
             response_shard_total="$(printf '%s' "$RESP" | jq -r '.shard_total // empty')"
             coverage_expected="$(printf '%s' "$RESP" | jq -r '.coverage_expected_parks // empty')"
             coverage_processed="$(printf '%s' "$RESP" | jq -r '.coverage_processed_parks // empty')"
             timeout_rate="$(printf '%s' "$RESP" | jq -r '.stats.timeoutRate // empty')"
-
-            if [ "$HTTP_STATUS" = "503" ] \
-              && [ "$success" != "true" ] \
-              && [ "$critical_failure" = "true" ] \
-              && [ "$noncritical_insert_warnings_only" = "true" ]; then
-              echo "Detected legacy insert-counter 503 for shard ${SHARD_INDEX}/${SHARD_TOTAL}; treating as non-critical while rollout completes."
-              success="true"
-              critical_failure="false"
-            fi
 
             if [ "$contract_version" != "collect-queue-times/v1" ]; then
               echo "Collector contract mismatch (expected collect-queue-times/v1, got ${contract_version:-missing})" >&2

@@ -20,7 +20,7 @@ export function getTursoClient(): Client {
   if (tursoClient) return tursoClient
 
   const url = process.env.TURSO_DATABASE_URL || process.env.TURSO_DB_URL!
-  const token = process.env.TURSO_AUTH_TOKEN || process.env.TURSO_AUTH_TOKEN!
+  const token = process.env.TURSO_AUTH_TOKEN || process.env.TURSO_TOKEN!
 
   if (!url || !token) {
     throw new Error('TursoDB credentials not found in environment variables')

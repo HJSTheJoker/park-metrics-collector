@@ -18,10 +18,12 @@ jobs:
         uses: actions/github-script@v7
         env:
           STALE_THRESHOLD_MINUTES: ${{ vars.COLLECTOR_STALE_THRESHOLD_MINUTES || '7' }}
+          RECENT_DISPATCH_GUARD_MINUTES: ${{ vars.COLLECTOR_RECENT_DISPATCH_GUARD_MINUTES || '8' }}
         with:
           script: |
             const workflowId = 'collect-parkfolio.yml'
             const staleThresholdMinutes = Number(process.env.STALE_THRESHOLD_MINUTES || '7')
+            const recentDispatchGuardMinutes = Number(process.env.RECENT_DISPATCH_GUARD_MINUTES || '8')
             const now = Date.now()
 
             const tickMs = 5 * 60 * 1000
@@ -41,9 +43,20 @@ jobs:
             } else {
               const latestStatus = latest.status
               const latestStartedAtRaw = latest.run_started_at || latest.created_at
+              const latestStartedAt = Date.parse(latestStartedAtRaw)
+              const latestAgeMinutes = Number.isFinite(latestStartedAt)
+                ? (now - latestStartedAt) / (60 * 1000)
+                : Number.POSITIVE_INFINITY
               core.info(
                 `Latest collect run #${latest.run_number} status=${latestStatus} conclusion=${latest.conclusion ?? 'n/a'} started_at=${latestStartedAtRaw}`
               )
+
+              if (latestAgeMinutes <= recentDispatchGuardMinutes) {
+                core.info(
+                  `Latest collector run started ${latestAgeMinutes.toFixed(2)}m ago (<= ${recentDispatchGuardMinutes}m guard); skipping backup dispatch.`
+                )
+                return
+              }
 
               if (latestStatus !== 'completed') {
                 core.info('Latest collector run is still queued/in-progress; skipping backup dispatch.')

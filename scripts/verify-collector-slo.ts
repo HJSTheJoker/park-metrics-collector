@@ -79,8 +79,8 @@ function hasMetaFields(meta: Record<string, any> | undefined, fields: string[]):
   return missing
 }
 
-async function fetchJson(url: string) {
-  const response = await fetch(url)
+async function fetchJson(url: string, init?: RequestInit) {
+  const response = await fetch(url, init)
   const text = await response.text()
   let json: any = null
   try {
@@ -98,7 +98,8 @@ async function main() {
   const supabaseUrl = requiredEnv('NEXT_PUBLIC_SUPABASE_URL')
   const supabaseServiceRoleKey = requiredEnv('SUPABASE_SERVICE_ROLE_KEY')
   const baseUrl = (env('BASE_URL') ?? 'https://parkfolio.vercel.app').replace(/\/$/, '')
-  const cronSecret = env('CRON_SECRET')
+  const cronSecret = optionalEnvAny(['CRON_SECRET', 'CRON_SECRET_SECONDARY'])
+  const collectorExecutionMode = (env('COLLECTOR_EXECUTION_MODE') ?? 'direct').toLowerCase()
 
   const lookbackMinutes = envInt('MONITOR_LOOKBACK_MINUTES', 30, 5, 240)
   const expectedTickMinutes = envInt('EXPECTED_TICK_MINUTES', 5, 1, 60)
@@ -120,6 +121,7 @@ async function main() {
   const summary: Record<string, any> = {
     startedAt: startedAt.toISOString(),
     baseUrl,
+    collectorExecutionMode,
     lookbackMinutes,
     expectedTickMinutes,
     expectedShardTotal,
@@ -524,23 +526,31 @@ async function main() {
     }
   }
 
-  // 6) Collector contract quick check
-  if (!cronSecret) {
+  // 6) Collector contract quick check (only required in vercel-proxy mode)
+  if (collectorExecutionMode !== 'vercel-proxy') {
+    checks.push({
+      name: 'Collector quick contract check',
+      status: 'pass',
+      detail: `Skipped because COLLECTOR_EXECUTION_MODE=${collectorExecutionMode}.`,
+    })
+  } else if (!cronSecret) {
     checks.push({
       name: 'Collector quick contract check',
       status: 'warn',
-      detail: 'CRON_SECRET not configured; skipped quick collector contract check.',
+      detail: 'CRON_SECRET/CRON_SECRET_SECONDARY not configured; skipped quick collector contract check.',
     })
   } else {
     const nowEpoch = Math.floor(Date.now() / 1000)
     const tickEpoch = nowEpoch - (nowEpoch % (expectedTickMinutes * 60))
     const tickBucket = new Date(tickEpoch * 1000).toISOString()
 
-    const quickUrl = `${baseUrl}/api/cron/collect-queue-times?secret=${encodeURIComponent(
-      cronSecret
-    )}&quick=true&shard_index=0&shard_total=${expectedShardTotal}&tick_bucket=${encodeURIComponent(tickBucket)}`
+    const quickUrl = `${baseUrl}/api/cron/collect-queue-times?quick=true&shard_index=0&shard_total=${expectedShardTotal}&tick_bucket=${encodeURIComponent(tickBucket)}`
 
-    const quickResp = await fetchJson(quickUrl)
+    const quickResp = await fetchJson(quickUrl, {
+      headers: {
+        Authorization: `Bearer ${cronSecret}`,
+      },
+    })
     const missing: string[] = []
     for (const field of ['tick_bucket', 'shard_index', 'shard_total', 'coverage_expected_parks', 'coverage_processed_parks']) {
       if (!(field in (quickResp.json ?? {}))) missing.push(field)
