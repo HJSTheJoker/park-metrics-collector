@@ -284,7 +284,6 @@ async function runCollection() {
                 wait_time: item.wait_time || 0,
                 is_open: item.is_open !== false,
                 source: 'queue_times',
-                confidence: 1.0,
                 recorded_at: timestamp,
               }
             })

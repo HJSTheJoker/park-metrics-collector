@@ -50,7 +50,6 @@ export async function writeWaitTimesToTurso(records: any[]) {
         is_open: record.is_open !== false ? 1 : 0, // Boolean to integer
         status: record.status || null,
         source: record.source || 'queue_times',
-        confidence: record.confidence || 1.0,
         recorded_at: record.recorded_at || new Date().toISOString(),
         created_at: new Date().toISOString()
       }
@@ -176,7 +175,6 @@ export async function writeWaitTimesToSupabase(records: any[]) {
       is_open: record.is_open !== false,
       status: record.status || null,
       source: record.source || 'queue_times',
-      confidence: record.confidence || 1.0,
       recorded_at: record.recorded_at || new Date().toISOString()
     }))
 
