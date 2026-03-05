@@ -167,14 +167,13 @@ export async function writeWaitTimesToSupabase(records: any[]) {
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const batch = records.slice(i, i + BATCH_SIZE)
 
+    // Keep Supabase payload to schema-safe core columns.
+    // Some environments do not have optional columns like park_id/status.
     const formattedRecords = batch.map(record => ({
       id: record.id?.toString() || crypto.randomUUID(),
       ride_id: record.item_id?.toString(),
-      park_id: record.park_id?.toString() || null,
       wait_time: record.wait_time || 0,
       is_open: record.is_open !== false,
-      status: record.status || null,
-      source: record.source || 'queue_times',
       recorded_at: record.recorded_at || new Date().toISOString()
     }))
 
