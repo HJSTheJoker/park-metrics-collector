@@ -106,6 +106,7 @@ async function main() {
   const expectedShardTotal = envInt('EXPECTED_SHARD_TOTAL', 6, 1, 64)
   const maxFreshnessMinutes = envInt('MAX_P95_FRESHNESS_MINUTES', 15, 5, 240)
   const retentionHours = envInt('SUPABASE_RETENTION_HOURS', 48, 1, 24 * 30)
+  const retentionGraceMinutes = envInt('SUPABASE_RETENTION_GRACE_MINUTES', 45, 0, 24 * 60)
   const requireCronLogs = envBool('COLLECTOR_REQUIRE_CRON_LOGS', false)
   const reportFile = env('REPORT_FILE') ?? 'collector-monitor-report.md'
   const tursoUrl = optionalEnvAny(['TURSO_DATABASE_URL', 'TURSO_DB_URL'])
@@ -113,6 +114,9 @@ async function main() {
 
   const sinceIso = new Date(Date.now() - lookbackMinutes * 60 * 1000).toISOString()
   const retentionCutoffIso = new Date(Date.now() - retentionHours * 60 * 60 * 1000).toISOString()
+  const retentionHardCutoffIso = new Date(
+    Date.now() - (retentionHours * 60 + retentionGraceMinutes) * 60 * 1000
+  ).toISOString()
 
   const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
     auth: { persistSession: false },
@@ -127,7 +131,9 @@ async function main() {
     expectedShardTotal,
     maxFreshnessMinutes,
     retentionHours,
+    retentionGraceMinutes,
     retentionCutoffIso,
+    retentionHardCutoffIso,
     sinceIso,
   }
 
@@ -268,26 +274,48 @@ async function main() {
     .select('id', { head: true, count: 'exact' })
     .lt('recorded_at', retentionCutoffIso)
 
-  if (rideOlderError || weatherOlderError) {
+  const { count: rideOlderHardCount, error: rideOlderHardError } = await supabase
+    .from('ride_wait_time_history')
+    .select('id', { head: true, count: 'exact' })
+    .lt('recorded_at', retentionHardCutoffIso)
+
+  const { count: weatherOlderHardCount, error: weatherOlderHardError } = await supabase
+    .from('park_weather_history')
+    .select('id', { head: true, count: 'exact' })
+    .lt('recorded_at', retentionHardCutoffIso)
+
+  if (rideOlderError || weatherOlderError || rideOlderHardError || weatherOlderHardError) {
     checks.push({
       name: 'Supabase retention window',
       status: 'fail',
-      detail: `Unable to verify retention counts: ride=${rideOlderError?.message ?? 'ok'}, weather=${weatherOlderError?.message ?? 'ok'}`,
+      detail: `Unable to verify retention counts: ride=${rideOlderError?.message ?? 'ok'}, weather=${weatherOlderError?.message ?? 'ok'}, rideHard=${rideOlderHardError?.message ?? 'ok'}, weatherHard=${weatherOlderHardError?.message ?? 'ok'}`,
     })
   } else {
     const olderRide = Number(rideOlderCount ?? 0)
     const olderWeather = Number(weatherOlderCount ?? 0)
+    const olderRideHard = Number(rideOlderHardCount ?? 0)
+    const olderWeatherHard = Number(weatherOlderHardCount ?? 0)
     summary.supabaseRetention = {
       cutoffIso: retentionCutoffIso,
+      hardCutoffIso: retentionHardCutoffIso,
+      graceMinutes: retentionGraceMinutes,
       rideOlderThanCutoff: olderRide,
       weatherOlderThanCutoff: olderWeather,
+      rideOlderThanHardCutoff: olderRideHard,
+      weatherOlderThanHardCutoff: olderWeatherHard,
     }
 
-    if (olderRide > 0 || olderWeather > 0) {
+    if (olderRideHard > 0 || olderWeatherHard > 0) {
       checks.push({
         name: 'Supabase retention window',
         status: 'fail',
-        detail: `Rows older than ${retentionHours}h remain (ride=${olderRide}, weather=${olderWeather}).`,
+        detail: `Rows older than ${retentionHours}h+${retentionGraceMinutes}m remain (ride=${olderRideHard}, weather=${olderWeatherHard}).`,
+      })
+    } else if (olderRide > 0 || olderWeather > 0) {
+      checks.push({
+        name: 'Supabase retention window',
+        status: 'warn',
+        detail: `Rows older than ${retentionHours}h are within prune grace window (${retentionGraceMinutes}m): ride=${olderRide}, weather=${olderWeather}.`,
       })
     } else {
       checks.push({
